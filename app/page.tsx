@@ -56,6 +56,23 @@ JOIN order_reviews r ON pay.order_id = r.order_id
 GROUP BY pay.payment_type
 ORDER BY avg_review_score DESC`,
   },
+  {
+    label: "Lowest reviewed categories",
+    question: "Danh mục sản phẩm nào có điểm đánh giá trung bình thấp nhất?",
+    sql: `SELECT
+  COALESCE(t.product_category_name_english, p.product_category_name) AS category,
+  ROUND(AVG(CAST(r.review_score AS REAL)), 2) AS avg_review_score,
+  COUNT(DISTINCT r.order_id) AS reviewed_orders
+FROM order_reviews r
+JOIN order_items oi ON r.order_id = oi.order_id
+JOIN products p ON oi.product_id = p.product_id
+LEFT JOIN category_translation t
+  ON p.product_category_name = t.product_category_name
+GROUP BY category
+HAVING reviewed_orders >= 20
+ORDER BY avg_review_score ASC, reviewed_orders DESC
+LIMIT 15`,
+  },
 ];
 
 function numericColumns(rows: Row[]) {
@@ -105,6 +122,18 @@ export default function Home() {
 
   const tableEntries = useMemo(() => Object.entries(schema), [schema]);
 
+  function clearResult() {
+    setRows([]);
+    setColumns([]);
+  }
+
+  function handleQuestionChange(value: string) {
+    setQuestion(value);
+    setSql("");
+    clearResult();
+    setMessage("Click Ask AI to generate SQL for this question.");
+  }
+
   useEffect(() => {
     fetch("/api/schema")
       .then((response) => response.json())
@@ -135,8 +164,10 @@ export default function Home() {
   }
 
   async function askAi() {
+    if (busy || !question.trim()) return;
+
     setBusy(true);
-    setMessage("");
+    setMessage("Generating SQL with the local model...");
     try {
       const response = await fetch("/api/ask", {
         method: "POST",
@@ -175,17 +206,24 @@ export default function Home() {
       </aside>
 
       <section className={styles.workspace}>
-        <div className={styles.panel}>
+        <form
+          className={styles.panel}
+          onSubmit={(event) => {
+            event.preventDefault();
+            void askAi();
+          }}
+        >
           <div className={styles.examples}>
             {EXAMPLES.map((example) => (
               <button
                 className="secondary"
+                type="button"
                 key={example.label}
                 onClick={() => {
                   setQuestion(example.question);
                   setSql(example.sql);
-                  setRows([]);
-                  setColumns([]);
+                  clearResult();
+                  setMessage("Example SQL loaded. Click Run SQL to execute it.");
                 }}
               >
                 {example.label}
@@ -197,16 +235,21 @@ export default function Home() {
             Business question
             <input
               value={question}
-              onChange={(event) => setQuestion(event.target.value)}
+              onChange={(event) => handleQuestionChange(event.target.value)}
               placeholder="Ask about revenue, delivery, reviews, products..."
             />
           </label>
 
           <div className={styles.actions}>
-            <button onClick={askAi} disabled={busy}>
-              Ask AI
+            <button type="submit" disabled={busy || !question.trim()}>
+              {busy ? "Asking..." : "Ask AI"}
             </button>
-            <button className="secondary" onClick={() => runQuery()} disabled={busy}>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => runQuery()}
+              disabled={busy || !sql.trim()}
+            >
               Run SQL
             </button>
           </div>
@@ -217,7 +260,7 @@ export default function Home() {
           </label>
 
           {message ? <p className={styles.message}>{message}</p> : null}
-        </div>
+        </form>
 
         <div className={styles.panel}>
           <h2>Visualization</h2>
