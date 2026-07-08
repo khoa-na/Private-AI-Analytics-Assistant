@@ -1,0 +1,15 @@
+# Local planning notes
+docs/
+
+# Local datasets
+data/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+tsconfig.tsbuildinfo
+
+# Local environment
+.env
+.env.local
