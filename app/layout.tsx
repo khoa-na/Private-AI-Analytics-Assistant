@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SQL AI Assistant",
+  title: "Private AI Analytics Assistant",
   description: "Natural-language analytics over the Olist ecommerce dataset.",
 };
 

@@ -1,12 +1,12 @@
 {
-  "name": "sql-ai-assistant",
+  "name": "private-ai-analytics-assistant",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 4000",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 4000",
     "build-db": "tsx scripts/build-db.ts",
     "test": "tsx tests/sqlSafety.test.ts",
     "typecheck": "tsc --noEmit"
