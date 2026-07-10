@@ -38,7 +38,7 @@ export default function Home() {
 
   async function runQuery(nextSql = sql) {
     setBusy(true);
-    setMessage("");
+    setMessage("Running SQL...");
     try {
       const response = await fetch("/api/query", {
         method: "POST",
@@ -49,6 +49,7 @@ export default function Home() {
       if (!response.ok) throw new Error(data.error ?? "Query failed.");
       setRows(data.rows);
       setColumns(data.columns);
+      setMessage(`Query returned ${data.rows.length} rows.`);
     } catch (error) {
       setRows([]);
       setColumns([]);
@@ -122,7 +123,11 @@ export default function Home() {
 
           <div className={styles.actions}>
             <button type="submit" disabled={busy || !question.trim()}>
-              {busy ? "Asking..." : "Ask AI"}
+              {busy
+                ? message === "Running SQL..."
+                  ? "Running SQL..."
+                  : "Asking..."
+                : "Ask AI"}
             </button>
             <button
               type="button"
@@ -142,7 +147,7 @@ export default function Home() {
           {message ? <p className={styles.message}>{message}</p> : null}
         </form>
 
-        <ChartPanel rows={rows} />
+        <ChartPanel rows={rows} busy={busy} />
         <ResultTable columns={columns} rows={rows} />
       </section>
     </main>

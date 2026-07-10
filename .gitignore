@@ -1,5 +1,6 @@
 # Local planning notes
-docs/
+docs/*
+!docs/AI_ANALYTICS_ROADMAP.md
 
 # Local datasets
 data/

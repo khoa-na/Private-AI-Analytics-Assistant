@@ -19,6 +19,17 @@ const tables: Record<string, string> = {
   "product_category_name_translation.csv": "category_translation",
 };
 
+const indexes = [
+  "CREATE INDEX idx_orders_order_id ON orders(order_id)",
+  "CREATE INDEX idx_orders_customer_id ON orders(customer_id)",
+  "CREATE INDEX idx_order_items_order_id ON order_items(order_id)",
+  "CREATE INDEX idx_order_items_product_id ON order_items(product_id)",
+  "CREATE INDEX idx_order_reviews_order_id ON order_reviews(order_id)",
+  "CREATE INDEX idx_order_payments_order_id ON order_payments(order_id)",
+  "CREATE INDEX idx_products_product_id ON products(product_id)",
+  "CREATE INDEX idx_category_translation_name ON category_translation(product_category_name)",
+];
+
 function quoteIdentifier(value: string) {
   return `"${value.replaceAll('"', '""')}"`;
 }
@@ -74,8 +85,18 @@ async function main() {
   for (const [fileName, tableName] of Object.entries(tables)) {
     await loadCsv(db, fileName, tableName);
   }
+
+  db.exec("BEGIN");
+  try {
+    for (const index of indexes) db.exec(index);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
   db.close();
 
+  console.log(`Created ${indexes.length} indexes`);
   console.log(`\nDatabase created at ${dbPath}`);
 }
 
