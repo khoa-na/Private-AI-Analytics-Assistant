@@ -1,6 +1,5 @@
 import { getDb } from "./db";
-
-export type Schema = Record<string, string[]>;
+import type { Schema } from "./analyticsTypes";
 
 function quoteIdentifier(value: string) {
   return `"${value.replaceAll('"', '""')}"`;
