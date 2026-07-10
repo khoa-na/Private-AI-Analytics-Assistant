@@ -6,6 +6,7 @@ export type ChatMessage = {
 type ChatCompletionOptions = {
   maxTokens: number;
   temperature: number;
+  responseFormat?: Record<string, unknown>;
 };
 
 type ChatCompletionResponse = {
@@ -39,6 +40,9 @@ export async function completeChat(
       model,
       temperature: options.temperature,
       max_tokens: options.maxTokens,
+      ...(options.responseFormat
+        ? { response_format: options.responseFormat }
+        : {}),
       ...(process.env.OPENAI_BASE_URL
         ? { chat_template_kwargs: { enable_thinking: false } }
         : {}),
