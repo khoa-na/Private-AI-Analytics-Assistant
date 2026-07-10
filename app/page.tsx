@@ -2,31 +2,36 @@
 
 import { useEffect, useState } from "react";
 import { ChartPanel } from "@/components/ChartPanel";
+import { InsightPanel } from "@/components/InsightPanel";
 import { ResultTable } from "@/components/ResultTable";
 import { SchemaSidebar } from "@/components/SchemaSidebar";
-import type { Row, Schema } from "@/lib/analyticsTypes";
+import type { Analysis, ChartSpec, Row, Schema } from "@/lib/analyticsTypes";
 import { EXAMPLES } from "@/lib/examples";
 import styles from "./page.module.css";
 
 export default function Home() {
   const [schema, setSchema] = useState<Schema>({});
   const [question, setQuestion] = useState<string>(EXAMPLES[0].question);
-  const [sql, setSql] = useState<string>(EXAMPLES[0].sql);
   const [rows, setRows] = useState<Row[]>([]);
   const [columns, setColumns] = useState<string[]>([]);
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [chart, setChart] = useState<ChartSpec>();
+  const [followUps, setFollowUps] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
   function clearResult() {
     setRows([]);
     setColumns([]);
+    setAnalysis(null);
+    setChart(undefined);
+    setFollowUps([]);
   }
 
   function handleQuestionChange(value: string) {
     setQuestion(value);
-    setSql("");
     clearResult();
-    setMessage("Click Ask AI to generate SQL for this question.");
+    setMessage("Click Analyze to generate SQL and insights for this question.");
   }
 
   useEffect(() => {
@@ -36,45 +41,30 @@ export default function Home() {
       .catch(() => setMessage("Could not load database schema."));
   }, []);
 
-  async function runQuery(nextSql = sql) {
-    setBusy(true);
-    setMessage("Running SQL...");
-    try {
-      const response = await fetch("/api/query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sql: nextSql }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Query failed.");
-      setRows(data.rows);
-      setColumns(data.columns);
-      setMessage(`Query returned ${data.rows.length} rows.`);
-    } catch (error) {
-      setRows([]);
-      setColumns([]);
-      setMessage(error instanceof Error ? error.message : "Query failed.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function askAi() {
+  async function analyze() {
     if (busy || !question.trim()) return;
 
     setBusy(true);
+    clearResult();
     setMessage("Generating SQL with the local model...");
     try {
-      const response = await fetch("/api/ask", {
+      const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "AI request failed.");
-      setSql(data.sql);
-      setMessage(data.reason ?? "");
-      await runQuery(data.sql);
+      setRows(data.result.rows);
+      setColumns(data.result.columns);
+      setAnalysis(data.analysis);
+      setChart(data.chart);
+      setFollowUps(data.followUpQuestions ?? []);
+      setMessage(
+        `Analyzed ${data.result.rowCount} rows in ${
+          data.timings.sqlGenerationMs + data.timings.queryMs + data.timings.analysisMs
+        } ms.`,
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "AI request failed.");
     } finally {
@@ -91,7 +81,7 @@ export default function Home() {
           className={styles.panel}
           onSubmit={(event) => {
             event.preventDefault();
-            void askAi();
+            void analyze();
           }}
         >
           <div className={styles.examples}>
@@ -102,9 +92,8 @@ export default function Home() {
                 key={example.label}
                 onClick={() => {
                   setQuestion(example.question);
-                  setSql(example.sql);
                   clearResult();
-                  setMessage("Example SQL loaded. Click Run SQL to execute it.");
+                  setMessage("Example loaded. Click Analyze to run it.");
                 }}
               >
                 {example.label}
@@ -123,32 +112,26 @@ export default function Home() {
 
           <div className={styles.actions}>
             <button type="submit" disabled={busy || !question.trim()}>
-              {busy
-                ? message === "Running SQL..."
-                  ? "Running SQL..."
-                  : "Asking..."
-                : "Ask AI"}
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => runQuery()}
-              disabled={busy || !sql.trim()}
-            >
-              Run SQL
+              {busy ? "Analyzing..." : "Analyze"}
             </button>
           </div>
-
-          <label>
-            SQL
-            <textarea value={sql} onChange={(event) => setSql(event.target.value)} />
-          </label>
 
           {message ? <p className={styles.message}>{message}</p> : null}
         </form>
 
-        <ChartPanel rows={rows} busy={busy} />
+        <InsightPanel analysis={analysis} />
+        <ChartPanel rows={rows} busy={busy} chart={chart} />
         <ResultTable columns={columns} rows={rows} />
+        {followUps.length ? (
+          <section className={styles.panel}>
+            <h2>Follow-up questions</h2>
+            <ul>
+              {followUps.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
       </section>
     </main>
   );

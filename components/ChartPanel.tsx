@@ -9,35 +9,41 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { Row } from "@/lib/analyticsTypes";
+import type { ChartSpec, Row } from "@/lib/analyticsTypes";
 import styles from "@/app/page.module.css";
 
-export function ChartPanel({ rows, busy }: { rows: Row[]; busy: boolean }) {
-  const columns = rows.length ? Object.keys(rows[0]) : [];
-  const yKey = columns.find((key) =>
-    rows.some((row) => typeof row[key] === "number"),
-  );
-  const xKey = columns.find((column) => column !== yKey);
+export function ChartPanel({
+  rows,
+  busy,
+  chart,
+}: {
+  rows: Row[];
+  busy: boolean;
+  chart?: ChartSpec;
+}) {
+  const yKey = chart?.yKeys?.[0];
+  const xKey = chart?.xKey;
 
-  if (!rows.length || !xKey || !yKey) {
+  if (!rows.length || !chart || chart.type === "none" || !xKey || !yKey) {
     return (
       <div className={styles.panel}>
-        <h2>Visualization</h2>
+        <h2>Recommended visualization</h2>
         <div className={styles.empty}>
           {busy
             ? "Waiting for query results..."
-            : "No chart available for this result."}
+            : chart?.reason ?? "No chart available for this result."}
         </div>
       </div>
     );
   }
 
-  const isTime = /month|date|time|timestamp/i.test(xKey);
+  const isTime = chart.type === "line";
   const Chart = isTime ? LineChart : BarChart;
 
   return (
     <div className={styles.panel}>
-      <h2>Visualization</h2>
+      <h2>Recommended visualization</h2>
+      <p>{chart.reason}</p>
       <ResponsiveContainer width="100%" height={320}>
         <Chart data={rows}>
           <CartesianGrid strokeDasharray="3 3" />

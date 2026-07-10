@@ -24,11 +24,16 @@ try {
     await completeChat([{ role: "user", content: "test" }], {
       maxTokens: 123,
       temperature: 0.2,
+      responseFormat: { type: "json_object", schema: { type: "object" } },
     }),
     "SELECT 1",
   );
   assert.equal(requestBody?.model, "test-model");
   assert.equal(requestBody?.max_tokens, 123);
+  assert.deepEqual(requestBody?.response_format, {
+    type: "json_object",
+    schema: { type: "object" },
+  });
   assert.deepEqual(requestBody?.chat_template_kwargs, {
     enable_thinking: false,
   });
