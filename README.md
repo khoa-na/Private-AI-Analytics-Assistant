@@ -45,7 +45,7 @@ visualizes the result.
 5. Start a local llama.cpp server:
 
    ```bash
-   llama serve -hf unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL
+   llama serve -hf unsloth/Qwen3.5-9B-GGUF:UD-Q3_K_XL --no-mmproj --ctx-size 4096 --parallel 1 --gpu-layers all --fit off --batch-size 512 --ubatch-size 256 --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 --reasoning off --reasoning-budget 0 --chat-template-kwargs '{"enable_thinking":false}'
    ```
 
    The app expects the OpenAI-compatible endpoint at
@@ -58,5 +58,13 @@ visualizes the result.
    npm run dev
    ```
 
+   Open `http://localhost:4000`.
+
 The `data/` directory is ignored by Git because the Kaggle files and generated
 database should stay local.
+
+## Product Roadmap
+
+See the [AI analytics roadmap](./docs/AI_ANALYTICS_ROADMAP.md) for the phased
+plan to evolve this text-to-SQL MVP into a grounded, conversational AI data
+analyst.

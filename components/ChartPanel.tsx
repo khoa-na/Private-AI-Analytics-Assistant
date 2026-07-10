@@ -12,7 +12,7 @@ import {
 import type { Row } from "@/lib/analyticsTypes";
 import styles from "@/app/page.module.css";
 
-export function ChartPanel({ rows }: { rows: Row[] }) {
+export function ChartPanel({ rows, busy }: { rows: Row[]; busy: boolean }) {
   const columns = rows.length ? Object.keys(rows[0]) : [];
   const yKey = columns.find((key) =>
     rows.some((row) => typeof row[key] === "number"),
@@ -23,7 +23,11 @@ export function ChartPanel({ rows }: { rows: Row[] }) {
     return (
       <div className={styles.panel}>
         <h2>Visualization</h2>
-        <div className={styles.empty}>No chart available for this result.</div>
+        <div className={styles.empty}>
+          {busy
+            ? "Waiting for query results..."
+            : "No chart available for this result."}
+        </div>
       </div>
     );
   }
