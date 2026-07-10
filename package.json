@@ -1,12 +1,12 @@
 {
-  "name": "sql-ai-assistant",
+  "name": "private-ai-analytics-assistant",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 4000",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 4000",
     "build-db": "tsx scripts/build-db.ts",
     "test": "tsx tests/sqlSafety.test.ts",
     "typecheck": "tsc --noEmit"
@@ -15,7 +15,6 @@
     "csv-parse": "^5.5.0",
     "next": "^15.0.0",
     "node-sql-parser": "^5.3.0",
-    "openai": "^4.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "recharts": "^3.0.0"

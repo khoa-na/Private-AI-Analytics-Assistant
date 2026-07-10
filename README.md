@@ -1,4 +1,4 @@
-# SQL AI Assistant
+# Private AI Analytics Assistant
 
 Portfolio project for an AI engineer: a TypeScript web app that turns business
 questions into safe SQL, executes them on the Olist ecommerce dataset, and
