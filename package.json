@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start -p 4000",
     "build-db": "tsx scripts/build-db.ts",
-    "test": "tsx tests/sqlSafety.test.ts && tsx tests/llmClient.test.ts && tsx tests/queryRunner.test.ts && tsx tests/resultProfile.test.ts && tsx tests/llmAnalysis.test.ts && tsx tests/datasetGuide.test.ts && tsx tests/llmSql.test.ts && tsx tests/generatedQuery.test.ts",
+    "eval": "tsx scripts/run-evals.ts",
+    "test": "tsx tests/sqlSafety.test.ts && tsx tests/llmClient.test.ts && tsx tests/queryRunner.test.ts && tsx tests/resultProfile.test.ts && tsx tests/llmAnalysis.test.ts && tsx tests/datasetGuide.test.ts && tsx tests/llmSql.test.ts && tsx tests/generatedQuery.test.ts && tsx tests/evalQuestions.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

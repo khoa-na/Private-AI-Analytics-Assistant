@@ -1,0 +1,32 @@
+{
+  "dataset": "olist",
+  "dialect": "sqlite",
+  "entities": {
+    "order": { "table": "orders", "key": "order_id" },
+    "product": { "table": "products", "key": "product_id" },
+    "customer": { "table": "customers", "key": "customer_unique_id" },
+    "seller": { "table": "sellers", "key": "seller_id" }
+  },
+  "relationships": [
+    ["customers.customer_id", "orders.customer_id"],
+    ["orders.order_id", "order_items.order_id"],
+    ["orders.order_id", "order_payments.order_id"],
+    ["orders.order_id", "order_reviews.order_id"],
+    ["order_items.product_id", "products.product_id"],
+    ["order_items.seller_id", "sellers.seller_id"],
+    ["products.product_category_name", "category_translation.product_category_name"]
+  ],
+  "measures": {
+    "product_rating": {
+      "grain": "product",
+      "expression": "AVG(CAST(order_reviews.review_score AS REAL))",
+      "join_path": ["order_reviews.order_id=order_items.order_id", "order_items.product_id=products.product_id"]
+    },
+    "merchandise_sales": {
+      "grain": "product",
+      "expression": "SUM(CAST(order_items.price AS REAL))"
+    },
+    "units_sold": { "grain": "product", "expression": "COUNT(*)" },
+    "order_count": { "grain": "order", "expression": "COUNT(DISTINCT orders.order_id)" }
+  }
+}
