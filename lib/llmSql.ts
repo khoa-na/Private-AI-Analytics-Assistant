@@ -84,6 +84,7 @@ export async function generateSql(
         "Questions can be written in English or Vietnamese; translate the user intent internally.",
         "After the tool result, return only SQL without markdown, JSON, explanations, or comments.",
         "The SQL must answer the exact current user question and be one read-only SELECT statement.",
+        "Choose the required result grain and output shape before writing SQL; follow the dataset SQL playbook exactly.",
         "Use only tables and columns from the schema.",
         "Cast numeric CSV text fields with CAST(column AS REAL) before math.",
         "CSV missing values are empty strings; exclude them when grouping dates or numbers.",
@@ -133,6 +134,7 @@ export async function generateSql(
         role: "user",
         content: [
           "Now return only the final SQL query.",
+          "Before returning it, verify that its row count and grain match the question (for example, a how-many question returns one scalar row).",
           "Use short table aliases and qualify every column in SELECT, JOIN, WHERE, GROUP BY, HAVING, and ORDER BY.",
           ...(correction
             ? [`The previous query failed with: ${correction.error}`]

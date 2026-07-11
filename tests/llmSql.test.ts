@@ -12,6 +12,13 @@ assert.match(
   }),
   /Data model contract/,
 );
+const context = executeDatasetGuideTool({
+  id: "call-context",
+  type: "function",
+  function: { name: "get_dataset_guide", arguments: { dataset: "olist" } },
+});
+assert.match(context, /"product_rating"/);
+assert.match(context, /Count entities satisfying an aggregate condition/);
 assert.throws(
   () =>
     executeDatasetGuideTool({

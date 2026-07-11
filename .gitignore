@@ -9,6 +9,7 @@ data/
 
 # Node / Next.js
 node_modules/
+evals/results/*.json
 .next/
 out/
 tsconfig.tsbuildinfo
