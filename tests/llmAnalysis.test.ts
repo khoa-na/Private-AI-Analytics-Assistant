@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { evidenceFromRows, parseAnalysis } from "../lib/llmAnalysis";
+import {
+  evidenceFromRows,
+  parseAnalysis,
+  parseAnalysisWithOneRetry,
+} from "../lib/llmAnalysis";
 
 const rows = [{ month: "2024-01", revenue: 10 }];
 const valid = JSON.stringify({
@@ -47,5 +51,18 @@ assert.throws(
     ),
   /chart specification/,
 );
+let attempts = 0;
+assert.equal(
+  (
+    await parseAnalysisWithOneRetry(
+      async () => (++attempts === 1 ? "not json" : valid),
+      ["month", "revenue"],
+      evidenceFromRows(rows),
+      ["revenue"],
+    )
+  ).chart.type,
+  "line",
+);
+assert.equal(attempts, 2);
 
 console.log("llmAnalysis tests passed");
