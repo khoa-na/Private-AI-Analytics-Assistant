@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { completeChat } from "../lib/llmClient";
+import { completeChat, completeChatMessage } from "../lib/llmClient";
 
 const originalFetch = globalThis.fetch;
 const originalApiKey = process.env.OPENAI_API_KEY;
@@ -37,6 +37,52 @@ try {
   assert.deepEqual(requestBody?.chat_template_kwargs, {
     enable_thinking: false,
   });
+
+  globalThis.fetch = async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: "call-1",
+                  type: "function",
+                  function: {
+                    name: "get_dataset_guide",
+                    arguments: { dataset: "olist" },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  };
+  const toolMessage = await completeChatMessage(
+    [{ role: "user", content: "load guide" }],
+    {
+      maxTokens: 50,
+      temperature: 0,
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "get_dataset_guide",
+            description: "Load guide",
+            parameters: { type: "object" },
+          },
+        },
+      ],
+      toolChoice: "required",
+    },
+  );
+  assert.equal(toolMessage?.tool_calls?.[0].function.name, "get_dataset_guide");
+  assert.equal(requestBody?.tool_choice, "required");
 
   globalThis.fetch = async () =>
     new Response(JSON.stringify({ error: { message: "model unavailable" } }), {

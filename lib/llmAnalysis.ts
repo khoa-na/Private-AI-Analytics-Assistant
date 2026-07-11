@@ -95,6 +95,29 @@ export function parseAnalysis(
   };
 }
 
+export async function parseAnalysisWithOneRetry(
+  request: () => Promise<string>,
+  columns: string[],
+  allowedEvidence: Set<string>,
+  numericColumns = columns,
+) {
+  try {
+    return parseAnalysis(
+      await request(),
+      columns,
+      allowedEvidence,
+      numericColumns,
+    );
+  } catch {
+    return parseAnalysis(
+      await request(),
+      columns,
+      allowedEvidence,
+      numericColumns,
+    );
+  }
+}
+
 export async function analyzeResult(
   question: string,
   sql: string,
@@ -120,7 +143,7 @@ export async function analyzeResult(
   const numericColumns = profile.columns
     .filter(({ type }) => type === "number")
     .map(({ name }) => name);
-  const output = await completeChat(
+  const requestAnalysis = () => completeChat(
     [
       {
         role: "system",
@@ -165,7 +188,7 @@ export async function analyzeResult(
     ],
     {
       maxTokens: 700,
-      temperature: 0.1,
+      temperature: 0,
       responseFormat: {
         type: "json_object",
         schema: {
@@ -181,6 +204,7 @@ export async function analyzeResult(
                 summary: { type: "string" },
                 insights: {
                   type: "array",
+                  maxItems: 3,
                   items: {
                     type: "object",
                     additionalProperties: false,
@@ -190,12 +214,17 @@ export async function analyzeResult(
                       evidence: {
                         type: "array",
                         minItems: 1,
+                        maxItems: 2,
                         items: { type: "string", enum: [...allowedEvidence] },
                       },
                     },
                   },
                 },
-                caveats: { type: "array", items: { type: "string" } },
+                caveats: {
+                  type: "array",
+                  maxItems: 3,
+                  items: { type: "string" },
+                },
               },
             },
             chart: {
@@ -219,6 +248,7 @@ export async function analyzeResult(
             },
             followUpQuestions: {
               type: "array",
+              maxItems: 3,
               items: { type: "string" },
             },
           },
@@ -227,5 +257,10 @@ export async function analyzeResult(
     },
   );
 
-  return parseAnalysis(output, columns, allowedEvidence, numericColumns);
+  return parseAnalysisWithOneRetry(
+    requestAnalysis,
+    columns,
+    allowedEvidence,
+    numericColumns,
+  );
 }

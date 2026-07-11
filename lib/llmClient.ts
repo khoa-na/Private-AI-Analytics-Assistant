@@ -1,12 +1,31 @@
+export type ToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string | Record<string, unknown> };
+};
+
 export type ChatMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+};
+
+export type ChatTool = {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
 };
 
 type ChatCompletionOptions = {
   maxTokens: number;
   temperature: number;
   responseFormat?: Record<string, unknown>;
+  tools?: ChatTool[];
+  toolChoice?: string | Record<string, unknown>;
 };
 
 type ChatCompletionResponse = {
@@ -14,12 +33,13 @@ type ChatCompletionResponse = {
     message?: {
       content?: string;
       reasoning_content?: string;
+      tool_calls?: ToolCall[];
     };
   }>;
   error?: { message?: string };
 };
 
-export async function completeChat(
+export async function completeChatMessage(
   messages: ChatMessage[],
   options: ChatCompletionOptions,
 ) {
@@ -43,6 +63,8 @@ export async function completeChat(
       ...(options.responseFormat
         ? { response_format: options.responseFormat }
         : {}),
+      ...(options.tools ? { tools: options.tools } : {}),
+      ...(options.toolChoice ? { tool_choice: options.toolChoice } : {}),
       ...(process.env.OPENAI_BASE_URL
         ? { chat_template_kwargs: { enable_thinking: false } }
         : {}),
@@ -56,5 +78,13 @@ export async function completeChat(
   }
 
   const message = completion.choices?.[0]?.message;
+  return message;
+}
+
+export async function completeChat(
+  messages: ChatMessage[],
+  options: ChatCompletionOptions,
+) {
+  const message = await completeChatMessage(messages, options);
   return message?.content || message?.reasoning_content || "";
 }

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { analyzeResult } from "@/lib/llmAnalysis";
-import { generateSql } from "@/lib/llmSql";
-import { runReadOnlyQuery } from "@/lib/queryRunner";
+import { generateAndRunQuery } from "@/lib/generatedQuery";
 import { profileResult } from "@/lib/resultProfile";
 
 export async function POST(request: Request) {
@@ -11,10 +10,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Question is required." }, { status: 400 });
     }
 
-    const started = Date.now();
-    const sql = await generateSql(question);
-    const generated = Date.now();
-    const result = runReadOnlyQuery(sql);
+    const { result, sqlGenerationMs, queryMs } =
+      await generateAndRunQuery(question);
     const queried = Date.now();
     const profile = profileResult(result.rows);
     let analyzed;
@@ -46,8 +43,8 @@ export async function POST(request: Request) {
       },
       ...analyzed,
       timings: {
-        sqlGenerationMs: generated - started,
-        queryMs: queried - generated,
+        sqlGenerationMs,
+        queryMs,
         analysisMs: Date.now() - queried,
       },
     });
