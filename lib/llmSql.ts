@@ -82,6 +82,13 @@ export async function generateSql(
     if (plannedSql) return plannedSql;
   }
 
+  return generateGeneralSql(question, correction);
+}
+
+export async function generateGeneralSql(
+  question: string,
+  correction?: SqlCorrection,
+) {
   const messages: ChatMessage[] = [
     {
       role: "system",

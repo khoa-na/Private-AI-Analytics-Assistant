@@ -5,7 +5,7 @@ import { ChartPanel } from "@/components/ChartPanel";
 import { InsightPanel } from "@/components/InsightPanel";
 import { ResultTable } from "@/components/ResultTable";
 import { SchemaSidebar } from "@/components/SchemaSidebar";
-import type { Analysis, ChartSpec, Row, Schema } from "@/lib/analyticsTypes";
+import type { Analysis, AnalysisStep, ChartSpec, Row, Schema } from "@/lib/analyticsTypes";
 import { EXAMPLES } from "@/lib/examples";
 import styles from "./page.module.css";
 
@@ -15,17 +15,26 @@ export default function Home() {
   const [rows, setRows] = useState<Row[]>([]);
   const [columns, setColumns] = useState<string[]>([]);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<Analysis | null>(null);
+  const [sql, setSql] = useState("");
+  const [truncated, setTruncated] = useState(false);
   const [chart, setChart] = useState<ChartSpec>();
   const [followUps, setFollowUps] = useState<string[]>([]);
+  const [steps, setSteps] = useState<AnalysisStep[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [insightsBusy, setInsightsBusy] = useState(false);
 
   function clearResult() {
     setRows([]);
     setColumns([]);
     setAnalysis(null);
+    setAiAnalysis(null);
+    setSql("");
+    setTruncated(false);
     setChart(undefined);
     setFollowUps([]);
+    setSteps([]);
   }
 
   function handleQuestionChange(value: string) {
@@ -59,7 +68,20 @@ export default function Home() {
         setMessage(data.message);
         return;
       }
+      if (data.mode === "multi_query") {
+        setSteps(data.steps);
+        setAnalysis(data.analysis);
+        setFollowUps(data.followUpQuestions ?? []);
+        setMessage(
+          `Completed ${data.steps.length} analysis steps in ${
+            data.timings.sqlGenerationMs + data.timings.queryMs + data.timings.analysisMs
+          } ms.`,
+        );
+        return;
+      }
       setRows(data.result.rows);
+      setSql(data.result.sql);
+      setTruncated(data.result.truncated);
       setColumns(data.result.columns);
       setAnalysis(data.analysis);
       setChart(data.chart);
@@ -73,6 +95,32 @@ export default function Home() {
       setMessage(error instanceof Error ? error.message : "AI request failed.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function generateInsights() {
+    if (insightsBusy || !sql || !rows.length) return;
+
+    setInsightsBusy(true);
+    try {
+      const response = await fetch("/api/insights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question,
+          sql,
+          rows,
+          truncated,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Insight generation failed.");
+      setAiAnalysis(data.analysis);
+      setFollowUps(data.followUpQuestions ?? []);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Insight generation failed.");
+    } finally {
+      setInsightsBusy(false);
     }
   }
 
@@ -123,9 +171,28 @@ export default function Home() {
           {message ? <p className={styles.message}>{message}</p> : null}
         </form>
 
-        <InsightPanel analysis={analysis} />
+        <InsightPanel
+          analysis={analysis}
+          aiAnalysis={aiAnalysis}
+          canGenerateInsights={Boolean(rows.length && sql && !analysis?.insights.length)}
+          insightsBusy={insightsBusy}
+          onGenerateInsights={() => void generateInsights()}
+        />
+        {steps.length ? (
+          <section className={styles.panel}>
+            <h2>Analysis plan</h2>
+            {steps.map((step, index) => (
+              <div key={`${index}-${step.purpose}`}>
+                <h3>{index + 1}. {step.purpose}</h3>
+                <p>{step.question}</p>
+                <pre>{step.result.sql}</pre>
+                <ResultTable columns={step.result.columns} rows={step.result.rows} />
+              </div>
+            ))}
+          </section>
+        ) : null}
         <ChartPanel rows={rows} busy={busy} chart={chart} />
-        <ResultTable columns={columns} rows={rows} />
+        {!steps.length ? <ResultTable columns={columns} rows={rows} /> : null}
         {followUps.length ? (
           <section className={styles.panel}>
             <h2>Follow-up questions</h2>

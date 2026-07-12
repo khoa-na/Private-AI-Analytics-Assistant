@@ -29,3 +29,17 @@ export type Analysis = {
   insights: Array<{ statement: string; evidence: string[] }>;
   caveats: string[];
 };
+
+export type AnalysisStep = {
+  kind: "query";
+  purpose: string;
+  question: string;
+  requiredGrain: string;
+  filters: string[];
+  result: {
+    sql: string;
+    columns: string[];
+    rows: Row[];
+    truncated: boolean;
+  };
+};
