@@ -13,6 +13,9 @@ type EvalCase = {
   checks: string[];
   refuse: boolean;
   caveat: boolean;
+  requiredSqlPatterns?: string[];
+  forbiddenSqlPatterns?: string[];
+  expectedColumns?: string[];
 };
 
 const cases = JSON.parse(readFileSync("evals/questions.json", "utf8")) as EvalCase[];
@@ -31,7 +34,27 @@ for (const [index, test] of selected.entries()) {
   process.stdout.write(`[${index + 1}/${selected.length}] ${test.id} ... `);
   try {
     const generated = await generateAndRunQuery(test.question);
-    const profile = profileResult(generated.result.rows);
+    if (generated.intent !== "query") {
+      const passed =
+        (test.outputShape === "clarification" && generated.intent === "clarification") ||
+        (test.outputShape === "unsupported" && generated.intent === "unsupported") ||
+        (test.refuse && generated.intent === "refusal");
+      results.push({
+        ...test,
+        passed,
+        automatic: {
+          execution: false,
+          refusal: generated.intent === "refusal",
+          intent: generated.intent,
+        },
+        semanticChecks: test.checks.map((check) => ({ check, verified: null })),
+        message: generated.message,
+        timings: { sqlGenerationMs: generated.sqlGenerationMs, totalMs: Date.now() - started },
+      });
+      console.log(passed ? `PASS (${generated.intent})` : "FAIL");
+      continue;
+    }
+    const profile = profileResult(generated.result.rows, 50, generated.result.truncated);
     const analyzed = await analyzeResult(test.question, generated.result.sql, profile);
     const sql = generated.result.sql.toLowerCase();
     const automatic = {
@@ -40,6 +63,15 @@ for (const [index, test] of selected.entries()) {
       tables: test.expectedTables.every((table) => new RegExp(`\\b${table}\\b`, "i").test(sql)),
       outputShape: hasExpectedShape(test.outputShape, profile.rowCount),
       caveat: !test.caveat || analyzed.analysis.caveats.length > 0,
+      requiredSql: (test.requiredSqlPatterns ?? []).every((pattern) =>
+        new RegExp(pattern, "i").test(sql),
+      ),
+      forbiddenSql: (test.forbiddenSqlPatterns ?? []).every(
+        (pattern) => !new RegExp(pattern, "i").test(sql),
+      ),
+      columns: (test.expectedColumns ?? []).every((column) =>
+        generated.result.columns.includes(column),
+      ),
     };
     const passed = Object.values(automatic).every(Boolean);
     results.push({
@@ -60,23 +92,22 @@ for (const [index, test] of selected.entries()) {
     });
     console.log(passed ? "PASS" : "FAIL");
   } catch (error) {
-    const passed = test.refuse;
     results.push({
       ...test,
-      passed,
-      automatic: { execution: false, refusal: passed },
+      passed: false,
+      automatic: { execution: false, refusal: false },
       semanticChecks: test.checks.map((check) => ({ check, verified: null })),
       error: error instanceof Error ? error.message : String(error),
       timings: { totalMs: Date.now() - started },
     });
-    console.log(passed ? "PASS (refused)" : "FAIL");
+    console.log("FAIL");
   }
 }
 
 const passed = results.filter((result) => result.passed).length;
 const report = {
   createdAt: new Date().toISOString(),
-  model: process.env.LLM_MODEL ?? "unknown",
+  model: process.env.OPENAI_MODEL ?? "unknown",
   summary: { total: results.length, passed, failed: results.length - passed },
   results,
 };

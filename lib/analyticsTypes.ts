@@ -25,6 +25,7 @@ export type ChartSpec = {
 
 export type Analysis = {
   summary: string;
+  summaryEvidence: string[];
   insights: Array<{ statement: string; evidence: string[] }>;
   caveats: string[];
 };

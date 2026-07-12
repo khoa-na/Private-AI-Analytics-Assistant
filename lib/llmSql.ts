@@ -1,14 +1,15 @@
 import { getSchemaText } from "./schema";
+import { tryGenerateQueryPlan } from "./llmQueryPlan";
 import { DATASET_IDS, getDatasetGuide } from "./datasetGuide";
 import {
   completeChat,
   completeChatMessage,
+  tokenBudget,
   type ChatMessage,
   type ChatTool,
   type ToolCall,
 } from "./llmClient";
 import { extractSqlFromModelOutput } from "./sqlExtraction";
-import { withDefaultLimit } from "./sqlSafety";
 
 const DATASET_GUIDE_TOOL: ChatTool = {
   type: "function",
@@ -75,6 +76,12 @@ export async function generateSql(
   question: string,
   correction?: SqlCorrection,
 ) {
+  if (!correction) {
+    const plannedSql = await tryGenerateQueryPlan(question);
+    if (typeof plannedSql === "string") return plannedSql;
+    if (plannedSql) return plannedSql;
+  }
+
   const messages: ChatMessage[] = [
     {
       role: "system",
@@ -110,7 +117,7 @@ export async function generateSql(
     },
   ];
   const toolResponse = await completeChatMessage(messages, {
-    maxTokens: 80,
+    maxTokens: tokenBudget("OPENAI_SQL_TOOL_MAX_TOKENS", 800),
     temperature: 0,
     tools: [DATASET_GUIDE_TOOL],
     toolChoice: "required",
@@ -143,12 +150,13 @@ export async function generateSql(
       },
     ],
     {
-      maxTokens: 320,
+      maxTokens: tokenBudget("OPENAI_SQL_MAX_TOKENS", 1200),
+      reasoningEffort: "low",
       temperature: 0,
       tools: [DATASET_GUIDE_TOOL],
       toolChoice: "none",
     },
   );
 
-  return withDefaultLimit(extractSqlFromModelOutput(output));
+  return extractSqlFromModelOutput(output);
 }

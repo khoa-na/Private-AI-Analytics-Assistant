@@ -10,10 +10,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Question is required." }, { status: 400 });
     }
 
-    const { result, sqlGenerationMs, queryMs } =
-      await generateAndRunQuery(question);
+    const generated = await generateAndRunQuery(question);
+    if (generated.intent !== "query") {
+      return NextResponse.json({ question, ...generated });
+    }
+    const { result, sqlGenerationMs, queryMs } = generated;
     const queried = Date.now();
-    const profile = profileResult(result.rows);
+    const profile = profileResult(result.rows, 50, result.truncated);
     let analyzed;
     try {
       analyzed = await analyzeResult(question, result.sql, profile);
@@ -22,6 +25,7 @@ export async function POST(request: Request) {
       analyzed = {
         analysis: {
           summary: "The query succeeded, but the model analysis could not be parsed.",
+          summaryEvidence: [],
           insights: [],
           caveats: [reason],
         },

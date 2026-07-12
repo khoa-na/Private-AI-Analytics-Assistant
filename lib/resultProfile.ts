@@ -1,13 +1,11 @@
 import type { ResultProfile, Row } from "./analyticsTypes";
 
-export function profileResult(rows: Row[], sampleSize = 50): ResultProfile {
+export function profileResult(rows: Row[], sampleSize = 50, truncated = false): ResultProfile {
   const names = rows.length ? Object.keys(rows[0]) : [];
 
   return {
     rowCount: rows.length,
-    // ponytail: LIMIT 1000 cannot distinguish an exact 1000-row result; add a
-    // count query only when exact totals are needed.
-    truncated: rows.length >= 1000,
+    truncated,
     columns: names.map((name) => {
       const values = rows.map((row) => row[name]);
       const present = values.filter((value) => value !== null);

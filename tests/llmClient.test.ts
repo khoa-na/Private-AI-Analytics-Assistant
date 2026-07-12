@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { completeChat, completeChatMessage } from "../lib/llmClient";
+import { completeChat, completeChatMessage, tokenBudget } from "../lib/llmClient";
 
 const originalFetch = globalThis.fetch;
 const originalApiKey = process.env.OPENAI_API_KEY;
@@ -10,6 +10,11 @@ try {
   process.env.OPENAI_API_KEY = "test-key";
   process.env.OPENAI_MODEL = "test-model";
   process.env.OPENAI_BASE_URL = "http://localhost:8080/v1/";
+  process.env.TEST_TOKEN_BUDGET = "321";
+  assert.equal(tokenBudget("TEST_TOKEN_BUDGET", 10), 321);
+  process.env.TEST_TOKEN_BUDGET = "invalid";
+  assert.equal(tokenBudget("TEST_TOKEN_BUDGET", 10), 10);
+  delete process.env.TEST_TOKEN_BUDGET;
 
   let requestBody: Record<string, unknown> | undefined;
   globalThis.fetch = async (_input, init) => {
@@ -37,6 +42,50 @@ try {
   assert.deepEqual(requestBody?.chat_template_kwargs, {
     enable_thinking: false,
   });
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            finish_reason: "length",
+            message: { content: "", reasoning_content: "unfinished reasoning" },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  await assert.rejects(
+    () =>
+      completeChat([{ role: "user", content: "test" }], {
+        maxTokens: 10,
+        temperature: 0,
+        responseFormat: { type: "json_object" },
+      }),
+    /exhausted its token budget/,
+  );
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            finish_reason: "stop",
+            message: { content: "", reasoning_content: '{"intent":"query"}' },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  await assert.rejects(
+    () =>
+      completeChat([{ role: "user", content: "test" }], {
+        maxTokens: 10,
+        temperature: 0,
+        responseFormat: { type: "json_object" },
+      }),
+    /did not return structured output/,
+  );
 
   globalThis.fetch = async (_input, init) => {
     requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;

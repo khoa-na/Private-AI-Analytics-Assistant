@@ -7,10 +7,12 @@ const profile = profileResult(
     { month: "2024-02", revenue: 20, note: null },
   ],
   1,
+  true,
 );
 
 assert.equal(profile.rowCount, 2);
 assert.equal(profile.sampleRows.length, 1);
+assert.equal(profile.truncated, true);
 assert.deepEqual(profile.columns[1], {
   name: "revenue",
   type: "number",

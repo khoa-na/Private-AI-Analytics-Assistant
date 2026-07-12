@@ -55,6 +55,10 @@ export default function Home() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "AI request failed.");
+      if (data.intent && data.intent !== "query") {
+        setMessage(data.message);
+        return;
+      }
       setRows(data.result.rows);
       setColumns(data.result.columns);
       setAnalysis(data.analysis);
