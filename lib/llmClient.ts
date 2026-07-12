@@ -23,6 +23,7 @@ export type ChatTool = {
 type ChatCompletionOptions = {
   maxTokens: number;
   temperature: number;
+  reasoningEffort?: "low" | "medium" | "high";
   responseFormat?: Record<string, unknown>;
   tools?: ChatTool[];
   toolChoice?: string | Record<string, unknown>;
@@ -30,14 +31,20 @@ type ChatCompletionOptions = {
 
 type ChatCompletionResponse = {
   choices?: Array<{
+    finish_reason?: string;
     message?: {
-      content?: string;
+      content?: string | null;
       reasoning_content?: string;
       tool_calls?: ToolCall[];
     };
   }>;
   error?: { message?: string };
 };
+
+export function tokenBudget(name: string, fallback: number) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
 
 export async function completeChatMessage(
   messages: ChatMessage[],
@@ -50,6 +57,14 @@ export async function completeChatMessage(
     throw new Error("Set OPENAI_API_KEY and OPENAI_MODEL in .env.local.");
   }
 
+  const reasoningEffort =
+    options.reasoningEffort ??
+    (process.env.OPENAI_REASONING_EFFORT as ChatCompletionOptions["reasoningEffort"]) ??
+    (/deepseek/i.test(model) ? "low" : undefined);
+  const localThinking =
+    process.env.OPENAI_CHAT_TEMPLATE_THINKING ??
+    (/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/)/i.test(baseURL) ? "false" : undefined);
+
   const response = await fetch(`${baseURL.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: {
@@ -60,13 +75,14 @@ export async function completeChatMessage(
       model,
       temperature: options.temperature,
       max_tokens: options.maxTokens,
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       ...(options.responseFormat
         ? { response_format: options.responseFormat }
         : {}),
       ...(options.tools ? { tools: options.tools } : {}),
       ...(options.toolChoice ? { tool_choice: options.toolChoice } : {}),
-      ...(process.env.OPENAI_BASE_URL
-        ? { chat_template_kwargs: { enable_thinking: false } }
+      ...(localThinking !== undefined
+        ? { chat_template_kwargs: { enable_thinking: localThinking === "true" } }
         : {}),
       messages,
     }),
@@ -77,8 +93,10 @@ export async function completeChatMessage(
     throw new Error(completion.error?.message ?? "AI request failed.");
   }
 
-  const message = completion.choices?.[0]?.message;
-  return message;
+  const choice = completion.choices?.[0];
+  return choice?.message
+    ? { ...choice.message, finish_reason: choice.finish_reason }
+    : undefined;
 }
 
 export async function completeChat(
@@ -86,5 +104,14 @@ export async function completeChat(
   options: ChatCompletionOptions,
 ) {
   const message = await completeChatMessage(messages, options);
+  if (message?.finish_reason === "length" && !message.content) {
+    throw new Error("Model exhausted its token budget before returning an answer.");
+  }
+  if (options.responseFormat) {
+    if (!message?.content?.trim()) {
+      throw new Error("Model did not return structured output.");
+    }
+    return message.content;
+  }
   return message?.content || message?.reasoning_content || "";
 }

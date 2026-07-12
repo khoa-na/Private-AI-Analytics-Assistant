@@ -1,5 +1,5 @@
 import type { Analysis, ChartSpec, ResultProfile, Row } from "./analyticsTypes";
-import { completeChat } from "./llmClient";
+import { completeChat, tokenBudget } from "./llmClient";
 
 type AnalysisResult = {
   analysis: Analysis;
@@ -24,6 +24,7 @@ export function parseAnalysis(
   columns: string[],
   allowedEvidence: Set<string>,
   numericColumns = columns,
+  allowedCaveats: string[] = [],
 ): AnalysisResult {
   const json = output.trim().replace(/^```(?:json)?\s*|\s*```$/gi, "");
   let value: unknown;
@@ -40,11 +41,19 @@ export function parseAnalysis(
   const { analysis, chart, followUpQuestions } = value;
   const insights = analysis.insights;
   const caveats = analysis.caveats;
+  const summaryEvidence = analysis.summaryEvidence;
   if (
     typeof analysis.summary !== "string" ||
+    !Array.isArray(summaryEvidence) ||
+    summaryEvidence.length === 0 ||
+    !summaryEvidence.every(
+      (item) => typeof item === "string" && allowedEvidence.has(item),
+    ) ||
     !Array.isArray(insights) ||
     !Array.isArray(caveats) ||
-    !caveats.every((item) => typeof item === "string") ||
+    !caveats.every(
+      (item) => typeof item === "string" && allowedCaveats.includes(item),
+    ) ||
     !Array.isArray(followUpQuestions) ||
     !followUpQuestions.every((item) => typeof item === "string")
   ) {
@@ -87,6 +96,7 @@ export function parseAnalysis(
   return {
     analysis: {
       summary: analysis.summary,
+      summaryEvidence: summaryEvidence as string[],
       insights: parsedInsights,
       caveats: caveats as string[],
     },
@@ -100,6 +110,7 @@ export async function parseAnalysisWithOneRetry(
   columns: string[],
   allowedEvidence: Set<string>,
   numericColumns = columns,
+  allowedCaveats: string[] = [],
 ) {
   try {
     return parseAnalysis(
@@ -107,14 +118,137 @@ export async function parseAnalysisWithOneRetry(
       columns,
       allowedEvidence,
       numericColumns,
+      allowedCaveats,
     );
   } catch {
-    return parseAnalysis(
-      await request(),
-      columns,
-      allowedEvidence,
-      numericColumns,
-    );
+    try {
+      return parseAnalysis(
+        await request(),
+        columns,
+        allowedEvidence,
+        numericColumns,
+        allowedCaveats,
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Analysis failed.";
+      return {
+        analysis: {
+          summary: "The query succeeded, but the model analysis was unavailable.",
+          summaryEvidence: [],
+          insights: [],
+          caveats: [reason],
+        },
+        chart: {
+          type: "none" as const,
+          reason: "No validated analysis was available for a chart recommendation.",
+        },
+        followUpQuestions: [],
+      };
+    }
+  }
+}
+
+function caveatsFromProfile(profile: ResultProfile) {
+  return [
+    ...(profile.truncated ? ["Results were limited to 1000 rows."] : []),
+    ...profile.columns
+      .filter(({ nullCount }) => nullCount > 0)
+      .map(({ name, nullCount }) => `${name} contains ${nullCount} null values.`),
+  ];
+}
+
+function evidenceFromRow(row: Row) {
+  return Object.entries(row).map(([column, value]) => `${column} = ${String(value)}`);
+}
+
+export function deterministicAnalysis(
+  question: string,
+  sql: string,
+  profile: ResultProfile,
+): AnalysisResult | undefined {
+  if (!profile.rowCount) return;
+
+  const vietnamese = /[ăâđêôơưàáạảãằắặẳẵầấậẩẫèéẹẻẽềếệểễìíịỉĩòóọỏõồốộổỗờớợởỡùúụủũừứựửữỳýỵỷỹ]/i.test(question);
+  const caveats = caveatsFromProfile(profile);
+  const first = profile.sampleRows[0];
+  const columns = profile.columns.map(({ name }) => name);
+  const numeric = profile.columns.filter(({ type }) => type === "number").map(({ name }) => name);
+
+  if (profile.rowCount === 1) {
+    const evidence = evidenceFromRow(first);
+    return {
+      analysis: {
+        summary: `${vietnamese ? "Kết quả" : "Result"}: ${evidence.join(", ")}.`,
+        summaryEvidence: evidence,
+        insights: [],
+        caveats,
+      },
+      chart: {
+        type: "none",
+        reason: vietnamese
+          ? "Một giá trị đơn không cần biểu đồ."
+          : "A single value does not need a chart.",
+      },
+      followUpQuestions: [],
+    };
+  }
+
+  const requestedLimit = Number(sql.match(/\blimit\s+(\d+)\s*$/i)?.[1]);
+  const ranking = requestedLimit > 0 && requestedLimit < 1000 && /\border\s+by\b/i.test(sql);
+  if (ranking) {
+    const label = columns.find((column) => !numeric.includes(column)) ?? columns[0];
+    const metric = numeric[0];
+    const evidence = [label, metric].filter(Boolean).map((column) => `${column} = ${String(first[column])}`);
+    return {
+      analysis: {
+        summary: vietnamese
+          ? `Kết quả xếp hạng có ${profile.rowCount} dòng; dòng đầu là ${evidence.join(", ")}.`
+          : `The ranking has ${profile.rowCount} rows; the first is ${evidence.join(", ")}.`,
+        summaryEvidence: evidence,
+        insights: [],
+        caveats,
+      },
+      chart: metric
+        ? {
+            type: "bar",
+            reason: vietnamese ? "Biểu đồ cột phù hợp với kết quả xếp hạng." : "A bar chart fits ranked results.",
+            xKey: label,
+            yKeys: [metric],
+          }
+        : { type: "none", reason: "The ranking has no numeric metric to chart." },
+      followUpQuestions: [],
+    };
+  }
+
+  const timeColumns = columns.filter((column) => /(?:^|_)(?:year|month|date|time)(?:_|$)/i.test(column));
+  if (timeColumns.length) {
+    const evidence = timeColumns.map((column) => `${column} = ${String(first[column])}`);
+    const yKey = numeric.find((column) => !timeColumns.includes(column));
+    return {
+      analysis: {
+        summary: vietnamese
+          ? `Chuỗi thời gian trả về ${profile.rowCount} điểm dữ liệu.`
+          : `The time series returned ${profile.rowCount} data points.`,
+        summaryEvidence: evidence,
+        insights: [],
+        caveats,
+      },
+      chart:
+        timeColumns.length === 1 && yKey
+          ? {
+              type: "line",
+              reason: vietnamese ? "Biểu đồ đường phù hợp với chuỗi thời gian." : "A line chart fits a time series.",
+              xKey: timeColumns[0],
+              yKeys: [yKey],
+            }
+          : {
+              type: "none",
+              reason: vietnamese
+                ? "Biểu đồ hiện tại không hỗ trợ nhiều chiều thời gian."
+                : "The current chart does not support multiple time dimensions.",
+            },
+      followUpQuestions: [],
+    };
   }
 }
 
@@ -127,6 +261,7 @@ export async function analyzeResult(
     return {
       analysis: {
         summary: "The query returned no data.",
+        summaryEvidence: [],
         insights: [],
         caveats: ["There is no evidence available for this question."],
       },
@@ -139,6 +274,10 @@ export async function analyzeResult(
   }
 
   const allowedEvidence = evidenceFromRows(profile.sampleRows);
+  const deterministic = deterministicAnalysis(question, sql, profile);
+  if (deterministic) return deterministic;
+
+  const allowedCaveats = caveatsFromProfile(profile);
   const columns = profile.columns.map(({ name }) => name);
   const numericColumns = profile.columns
     .filter(({ type }) => type === "number")
@@ -151,6 +290,8 @@ export async function analyzeResult(
           "You are a grounded ecommerce data analyst.",
           "Return only valid JSON with analysis, chart, and followUpQuestions.",
           "Every insight needs at least one evidence string copied exactly from allowedEvidence.",
+          "The summary needs at least one summaryEvidence string copied exactly from allowedEvidence.",
+          "Every caveat must be copied exactly from allowedCaveats. Return no caveats when allowedCaveats is empty.",
           "Do not state numbers that are not present in the evidence.",
           "You must recommend a chart type: bar, line, or none.",
           "For bar or line, choose one xKey and exactly one numeric yKey from the returned columns.",
@@ -169,9 +310,11 @@ export async function analyzeResult(
             columns: profile.columns,
           },
           allowedEvidence: [...allowedEvidence],
+          allowedCaveats,
           responseShape: {
             analysis: {
               summary: "string",
+              summaryEvidence: ["column = value"],
               insights: [{ statement: "string", evidence: ["column = value"] }],
               caveats: ["string"],
             },
@@ -187,7 +330,8 @@ export async function analyzeResult(
       },
     ],
     {
-      maxTokens: 700,
+      maxTokens: tokenBudget("OPENAI_ANALYSIS_MAX_TOKENS", 2400),
+      reasoningEffort: "low",
       temperature: 0,
       responseFormat: {
         type: "json_object",
@@ -199,9 +343,15 @@ export async function analyzeResult(
             analysis: {
               type: "object",
               additionalProperties: false,
-              required: ["summary", "insights", "caveats"],
+              required: ["summary", "summaryEvidence", "insights", "caveats"],
               properties: {
                 summary: { type: "string" },
+                summaryEvidence: {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: 2,
+                  items: { type: "string", enum: [...allowedEvidence] },
+                },
                 insights: {
                   type: "array",
                   maxItems: 3,
@@ -222,8 +372,8 @@ export async function analyzeResult(
                 },
                 caveats: {
                   type: "array",
-                  maxItems: 3,
-                  items: { type: "string" },
+                  maxItems: allowedCaveats.length,
+                  items: { type: "string", enum: allowedCaveats },
                 },
               },
             },
@@ -262,5 +412,6 @@ export async function analyzeResult(
     columns,
     allowedEvidence,
     numericColumns,
+    allowedCaveats,
   );
 }

@@ -1,10 +1,11 @@
 import { generateSql, type SqlCorrection } from "./llmSql";
+import type { IntentResponse } from "./queryPlan";
 import { runReadOnlyQuery, type QueryResult } from "./queryRunner";
 
 type Generator = (
   question: string,
   correction?: SqlCorrection,
-) => Promise<string>;
+) => Promise<string | IntentResponse>;
 type Runner = (sql: string) => QueryResult;
 
 export async function generateAndRunQuery(
@@ -33,16 +34,24 @@ export async function generateAndRunQuery(
     }
   }
 
-  let sql = await generateTimed();
+  let generated = await generateTimed();
+  if (typeof generated !== "string") {
+    return { ...generated, sqlGenerationMs, queryMs };
+  }
+  let sql = generated;
   let result: QueryResult;
   try {
     result = runTimed(sql);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Query failed.";
     if (/Database not found/i.test(message)) throw error;
-    sql = await generateTimed({ sql, error: message });
+    generated = await generateTimed({ sql, error: message });
+    if (typeof generated !== "string") {
+      return { ...generated, sqlGenerationMs, queryMs };
+    }
+    sql = generated;
     result = runTimed(sql);
   }
 
-  return { result, sqlGenerationMs, queryMs };
+  return { intent: "query" as const, result, sqlGenerationMs, queryMs };
 }
