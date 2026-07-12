@@ -52,8 +52,20 @@ export type QueryPlan = {
   limit?: number;
 };
 
+export type MultiQueryPlan = {
+  intent: "multi_query";
+  steps: Array<{
+    kind: "query";
+    purpose: string;
+    question: string;
+    requiredGrain: string;
+    filters: string[];
+  }>;
+};
+
 export type PlannedIntent =
   | QueryPlan
+  | MultiQueryPlan
   | { intent: "clarification" | "unsupported" | "refusal"; message: string }
   | { intent: "fallback" };
 
@@ -83,6 +95,29 @@ export function parsePlannedIntent(output: string): PlannedIntent {
     throw invalid();
   }
   if (value.intent === "fallback") return { intent: "fallback" };
+  if (value.intent === "multi_query") {
+    if (
+      !Array.isArray(value.steps) ||
+      value.steps.length < 2 ||
+      value.steps.length > 3 ||
+      !value.steps.every(
+        (step) =>
+          isRecord(step) &&
+          step.kind === "query" &&
+          typeof step.purpose === "string" &&
+          step.purpose.trim() &&
+          typeof step.question === "string" &&
+          step.question.trim() &&
+          typeof step.requiredGrain === "string" &&
+          step.requiredGrain.trim() &&
+          Array.isArray(step.filters) &&
+          step.filters.every((filter) => typeof filter === "string" && filter.trim()),
+      )
+    ) {
+      throw invalid();
+    }
+    return value as MultiQueryPlan;
+  }
   if (["clarification", "unsupported", "refusal"].includes(value.intent)) {
     if (typeof value.message !== "string" || !value.message.trim()) {
       throw new Error("Model returned an invalid query plan message.");

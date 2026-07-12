@@ -1,6 +1,27 @@
 import assert from "node:assert/strict";
 import { compileQueryPlan, parsePlannedIntent } from "../lib/queryPlan";
 
+assert.deepEqual(
+  parsePlannedIntent(JSON.stringify({
+    intent: "multi_query",
+    steps: [
+      { kind: "query", purpose: "Delivery", question: "Late-delivery rate by state", requiredGrain: "customer state", filters: [] },
+      { kind: "query", purpose: "Reviews", question: "Average review score by state", requiredGrain: "customer state", filters: [] },
+    ],
+  })),
+  {
+    intent: "multi_query",
+    steps: [
+      { kind: "query", purpose: "Delivery", question: "Late-delivery rate by state", requiredGrain: "customer state", filters: [] },
+      { kind: "query", purpose: "Reviews", question: "Average review score by state", requiredGrain: "customer state", filters: [] },
+    ],
+  },
+);
+assert.throws(
+  () => parsePlannedIntent('{"intent":"multi_query","steps":[]}'),
+  /invalid query plan/,
+);
+
 assert.equal(
   compileQueryPlan({
     intent: "query",

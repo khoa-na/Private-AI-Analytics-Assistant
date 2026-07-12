@@ -13,11 +13,13 @@ export async function tryGenerateQueryPlan(question: string) {
         role: "system",
         content: [
           "Classify the analytics request and return only JSON.",
+          "Use intent=multi_query only when answering requires two or three independently executable aggregate queries. Every step must have kind=query and produce database rows; synthesis is never a step. Each step question must be self-contained, copy the original time and entity filters, and declare its required result grain. Never use multi_query when one grouped SQL query is sufficient.",
           "Use intent=query for analytics questions representable by the supported metrics and dimensions.",
           "merchandise_sales means SUM(order_items.price), never freight.",
           "average_delivered_order_revenue means average per-order SUM(price) for delivered orders.",
           "purchase_month always comes from orders.order_purchase_timestamp.",
           "For comparisons across years use both purchase_year and purchase_month plus years.",
+          "When the question explicitly names calendar years, copy every named year into years; never omit the year filter.",
           "Never add a dimension, sort, limit, or year unless the question explicitly asks for it.",
           "A total revenue question has dimensions=[] and no sort or limit.",
           "Revenue by month has dimensions=[purchase_month].",
@@ -31,7 +33,7 @@ export async function tryGenerateQueryPlan(question: string) {
           "payment_value groups by payment_type. multi_payment_method_order_count means distinct payment methods, not payment rows.",
           "repeat_customer_count uses minimumCount=1 for more than one order.",
           "customer_merchandise_sales always uses dimensions=[customer]. seller_merchandise_sales always uses dimensions=[seller]. distinct_order_count by state uses dimensions=[customer_state]. distinct_seller_count by state uses dimensions=[seller_state].",
-          "In Vietnamese, 'Năm khách hàng' at the start of a ranking means five customers, not a calendar year; use limit=5.",
+          "In Vietnamese, number words before an entity (for example 'năm khách hàng' or 'năm danh mục') are quantities and must become limit values; calendar years are explicit four-digit years or follow phrases such as 'năm 2017'.",
           "Use sort and limit only for top, bottom, highest, or lowest questions.",
           "Use clarification for ambiguous requests, unsupported for unavailable product titles or forecasting, refusal for unsafe requests, and fallback only when no supported metric fits.",
           "Any request for a product name, title, or official name is unsupported because Olist has only product IDs and categories; do not substitute an ID or category name.",
@@ -51,7 +53,7 @@ export async function tryGenerateQueryPlan(question: string) {
             dimensions: DIMENSIONS,
           },
           shape: {
-            intent: "query|clarification|unsupported|refusal|fallback",
+            intent: "query|multi_query|clarification|unsupported|refusal|fallback",
             metric: "supported metric, required for query",
             dimensions: ["supported dimensions, required for query"],
             years: ["optional integer years"],
@@ -61,6 +63,7 @@ export async function tryGenerateQueryPlan(question: string) {
             sort: "optional asc|desc",
             limit: "optional integer",
             message: "required for clarification, unsupported, or refusal",
+            steps: [{ kind: "query", purpose: "data-producing purpose", question: "self-contained analytics question", requiredGrain: "result row grain", filters: ["copied original filters"] }],
           },
         }),
       },
@@ -80,7 +83,7 @@ export async function tryGenerateQueryPlan(question: string) {
           properties: {
             intent: {
               type: "string",
-              enum: ["query", "clarification", "unsupported", "refusal", "fallback"],
+              enum: ["query", "multi_query", "clarification", "unsupported", "refusal", "fallback"],
             },
             metric: { type: "string", enum: METRICS },
             dimensions: {
@@ -94,6 +97,23 @@ export async function tryGenerateQueryPlan(question: string) {
             sort: { type: "string", enum: ["asc", "desc"] },
             limit: { type: "integer", minimum: 1, maximum: 1000 },
             message: { type: "string" },
+            steps: {
+              type: "array",
+              minItems: 2,
+              maxItems: 3,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["kind", "purpose", "question", "requiredGrain", "filters"],
+                properties: {
+                  kind: { type: "string", enum: ["query"] },
+                  purpose: { type: "string" },
+                  question: { type: "string" },
+                  requiredGrain: { type: "string" },
+                  filters: { type: "array", items: { type: "string" } },
+                },
+              },
+            },
           },
         },
       },

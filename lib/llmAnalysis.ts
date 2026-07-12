@@ -106,7 +106,7 @@ export function parseAnalysis(
 }
 
 export async function parseAnalysisWithOneRetry(
-  request: () => Promise<string>,
+  request: (correction?: string) => Promise<string>,
   columns: string[],
   allowedEvidence: Set<string>,
   numericColumns = columns,
@@ -120,10 +120,10 @@ export async function parseAnalysisWithOneRetry(
       numericColumns,
       allowedCaveats,
     );
-  } catch {
+  } catch (firstError) {
     try {
       return parseAnalysis(
-        await request(),
+        await request(firstError instanceof Error ? firstError.message : "Invalid analysis output."),
         columns,
         allowedEvidence,
         numericColumns,
@@ -256,6 +256,7 @@ export async function analyzeResult(
   question: string,
   sql: string,
   profile: ResultProfile,
+  useDeterministic = true,
 ) {
   if (!profile.rowCount) {
     return {
@@ -274,7 +275,9 @@ export async function analyzeResult(
   }
 
   const allowedEvidence = evidenceFromRows(profile.sampleRows);
-  const deterministic = deterministicAnalysis(question, sql, profile);
+  const deterministic = useDeterministic
+    ? deterministicAnalysis(question, sql, profile)
+    : undefined;
   if (deterministic) return deterministic;
 
   const allowedCaveats = caveatsFromProfile(profile);
@@ -282,7 +285,7 @@ export async function analyzeResult(
   const numericColumns = profile.columns
     .filter(({ type }) => type === "number")
     .map(({ name }) => name);
-  const requestAnalysis = () => completeChat(
+  const requestAnalysis = (correction?: string) => completeChat(
     [
       {
         role: "system",
@@ -291,6 +294,7 @@ export async function analyzeResult(
           "Return only valid JSON with analysis, chart, and followUpQuestions.",
           "Every insight needs at least one evidence string copied exactly from allowedEvidence.",
           "The summary needs at least one summaryEvidence string copied exactly from allowedEvidence.",
+          "When the summary says highest or lowest, copy both the exact entity label and metric value into summaryEvidence.",
           "Every caveat must be copied exactly from allowedCaveats. Return no caveats when allowedCaveats is empty.",
           "Do not state numbers that are not present in the evidence.",
           "You must recommend a chart type: bar, line, or none.",
@@ -328,6 +332,12 @@ export async function analyzeResult(
           },
         }),
       },
+      ...(correction
+        ? [{
+            role: "user" as const,
+            content: `Your previous analysis was invalid: ${correction} Return corrected JSON using only the supplied evidence and schema.`,
+          }]
+        : []),
     ],
     {
       maxTokens: tokenBudget("OPENAI_ANALYSIS_MAX_TOKENS", 2400),

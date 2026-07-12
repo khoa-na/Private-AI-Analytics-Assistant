@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { analyzeResult } from "@/lib/llmAnalysis";
 import { generateAndRunQuery } from "@/lib/generatedQuery";
 import { profileResult } from "@/lib/resultProfile";
+import { runMultiQueryPlan } from "@/lib/multiQuery";
 
 export async function POST(request: Request) {
   try {
@@ -11,6 +12,20 @@ export async function POST(request: Request) {
     }
 
     const generated = await generateAndRunQuery(question);
+    if (generated.intent === "multi_query") {
+      const multi = await runMultiQueryPlan(question, generated);
+      multi.timings.sqlGenerationMs += generated.sqlGenerationMs;
+      return NextResponse.json({
+        question,
+        intent: "query",
+        mode: "multi_query",
+        steps: multi.steps,
+        analysis: multi.analysis,
+        chart: multi.chart,
+        followUpQuestions: multi.followUpQuestions,
+        timings: multi.timings,
+      });
+    }
     if (generated.intent !== "query") {
       return NextResponse.json({ question, ...generated });
     }
@@ -40,6 +55,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       question,
       result: {
+        sql: result.sql,
         columns: result.columns,
         rows: result.rows,
         rowCount: profile.rowCount,

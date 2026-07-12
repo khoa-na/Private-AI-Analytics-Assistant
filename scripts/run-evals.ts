@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { analyzeResult } from "../lib/llmAnalysis";
 import { generateAndRunQuery } from "../lib/generatedQuery";
 import { profileResult } from "../lib/resultProfile";
+import { evaluateSummary } from "../lib/summaryEvaluation";
+import { runMultiQueryPlan } from "../lib/multiQuery";
 
 type EvalCase = {
   id: string;
@@ -16,11 +18,17 @@ type EvalCase = {
   requiredSqlPatterns?: string[];
   forbiddenSqlPatterns?: string[];
   expectedColumns?: string[];
+  expectedSummaryPatterns?: string[];
+  forbiddenSummaryPatterns?: string[];
+  expectedStepTableGroups?: string[][];
 };
 
 const cases = JSON.parse(readFileSync("evals/questions.json", "utf8")) as EvalCase[];
+const categoryArg = process.argv.find((arg) => arg.startsWith("--category="));
 const limitArg = process.argv.find((arg) => arg.startsWith("--limit="));
-const selected = limitArg ? cases.slice(0, Number(limitArg.split("=")[1])) : cases;
+const category = categoryArg?.split("=")[1];
+const filtered = category ? cases.filter((test) => test.category === category) : cases;
+const selected = limitArg ? filtered.slice(0, Number(limitArg.split("=")[1])) : filtered;
 const results = [];
 
 function hasExpectedShape(shape: string, rowCount: number) {
@@ -34,6 +42,35 @@ for (const [index, test] of selected.entries()) {
   process.stdout.write(`[${index + 1}/${selected.length}] ${test.id} ... `);
   try {
     const generated = await generateAndRunQuery(test.question);
+    if (generated.intent === "multi_query") {
+      const multi = await runMultiQueryPlan(test.question, generated);
+      const sqlByStep = multi.steps.map(({ result }) => result.sql.toLowerCase());
+      const automatic = {
+        execution: true,
+        mode: test.outputShape === "multi_query",
+        stepCount: multi.steps.length >= 2 && multi.steps.length <= 3,
+        tables: (test.expectedStepTableGroups ?? []).every((group) =>
+          sqlByStep.some((sql) =>
+            group.every((table) => new RegExp(`\\b${table}\\b`, "i").test(sql)),
+          ),
+        ),
+        summaryPresent: Boolean(multi.analysis.summary.trim()),
+        summaryEvidence: multi.analysis.summaryEvidence.length > 0,
+      };
+      const passed = Object.values(automatic).every(Boolean);
+      results.push({
+        ...test,
+        passed,
+        automatic,
+        semanticChecks: test.checks.map((check) => ({ check, verified: null })),
+        steps: multi.steps,
+        analysis: multi.analysis,
+        chart: multi.chart,
+        timings: { ...multi.timings, totalMs: Date.now() - started },
+      });
+      console.log(passed ? `PASS (${multi.steps.length} steps)` : "FAIL");
+      continue;
+    }
     if (generated.intent !== "query") {
       const passed =
         (test.outputShape === "clarification" && generated.intent === "clarification") ||
@@ -48,7 +85,9 @@ for (const [index, test] of selected.entries()) {
           intent: generated.intent,
         },
         semanticChecks: test.checks.map((check) => ({ check, verified: null })),
-        message: generated.message,
+        message: "message" in generated
+          ? generated.message
+          : "The case unexpectedly required multiple queries.",
         timings: { sqlGenerationMs: generated.sqlGenerationMs, totalMs: Date.now() - started },
       });
       console.log(passed ? `PASS (${generated.intent})` : "FAIL");
@@ -56,6 +95,15 @@ for (const [index, test] of selected.entries()) {
     }
     const profile = profileResult(generated.result.rows, 50, generated.result.truncated);
     const analyzed = await analyzeResult(test.question, generated.result.sql, profile);
+    const summaryEvaluation = evaluateSummary(
+      analyzed.analysis.summary,
+      analyzed.analysis.summaryEvidence,
+      analyzed.analysis.caveats,
+      profile,
+      test.expectedSummaryPatterns,
+      test.forbiddenSummaryPatterns,
+      generated.result.rows,
+    );
     const sql = generated.result.sql.toLowerCase();
     const automatic = {
       execution: true,
@@ -72,6 +120,13 @@ for (const [index, test] of selected.entries()) {
       columns: (test.expectedColumns ?? []).every((column) =>
         generated.result.columns.includes(column),
       ),
+      summaryPresent: summaryEvaluation.present,
+      summaryEvidence: summaryEvaluation.evidenceValid,
+      summaryNumbers: summaryEvaluation.numbersGrounded,
+      summaryTruncation: summaryEvaluation.truncationValid,
+      summaryRequired: summaryEvaluation.requiredPatterns,
+      summaryForbidden: summaryEvaluation.forbiddenPatterns,
+      summaryComparisons: summaryEvaluation.comparisons.valid,
     };
     const passed = Object.values(automatic).every(Boolean);
     results.push({
@@ -82,6 +137,7 @@ for (const [index, test] of selected.entries()) {
       sql: generated.result.sql,
       rowCount: profile.rowCount,
       analysis: analyzed.analysis,
+      summaryEvaluation,
       chart: analyzed.chart,
       timings: {
         sqlGenerationMs: generated.sqlGenerationMs,
