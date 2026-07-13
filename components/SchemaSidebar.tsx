@@ -5,7 +5,7 @@ export function SchemaSidebar({ schema }: { schema: Schema }) {
   return (
     <aside className={styles.sidebar}>
       <h1>Private AI Analytics Assistant</h1>
-      <p>Olist ecommerce analytics with safe SQL and automatic charts.</p>
+      <p>Active-dataset analytics with safe SQL and grounded results.</p>
 
       <section>
         <h2>Schema</h2>

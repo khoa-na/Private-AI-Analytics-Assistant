@@ -1,5 +1,7 @@
 import type { Analysis, ChartSpec, ResultProfile, Row } from "./analyticsTypes";
-import { completeChat, tokenBudget } from "./llmClient";
+import { completeChat, stageReasoningEffort, tokenBudget } from "./llmClient";
+import { parseLastJsonObject } from "./jsonOutput";
+import { atStage } from "./pipelineError";
 
 type AnalysisResult = {
   analysis: Analysis;
@@ -26,15 +28,14 @@ export function parseAnalysis(
   numericColumns = columns,
   allowedCaveats: string[] = [],
 ): AnalysisResult {
-  const json = output.trim().replace(/^```(?:json)?\s*|\s*```$/gi, "");
   let value: unknown;
   try {
-    value = JSON.parse(json);
+    value = parseLastJsonObject(output);
   } catch {
     throw new Error("Model returned invalid analysis JSON.");
   }
 
-  if (!isRecord(value) || !isRecord(value.analysis) || !isRecord(value.chart)) {
+  if (!isRecord(value) || !isRecord(value.analysis)) {
     throw new Error("Model returned an invalid analysis structure.");
   }
 
@@ -53,9 +54,7 @@ export function parseAnalysis(
     !Array.isArray(caveats) ||
     !caveats.every(
       (item) => typeof item === "string" && allowedCaveats.includes(item),
-    ) ||
-    !Array.isArray(followUpQuestions) ||
-    !followUpQuestions.every((item) => typeof item === "string")
+    )
   ) {
     throw new Error("Model returned an invalid analysis structure.");
   }
@@ -75,23 +74,22 @@ export function parseAnalysis(
     return insight as { statement: string; evidence: string[] };
   });
 
-  const chartType = String(chart.type);
+  const chartType = isRecord(chart) ? String(chart.type) : "";
   const validAxes =
     chartType === "none" ||
-    (typeof chart.xKey === "string" &&
+    (isRecord(chart) &&
+      typeof chart.xKey === "string" &&
       columns.includes(chart.xKey) &&
       Array.isArray(chart.yKeys) &&
       chart.yKeys.length === 1 &&
       typeof chart.yKeys[0] === "string" &&
       numericColumns.includes(chart.yKeys[0]));
-  if (
-    !["bar", "line", "none"].includes(chartType) ||
-    typeof chart.reason !== "string" ||
-    !chart.reason.trim() ||
-    !validAxes
-  ) {
-    throw new Error("Model returned an invalid chart specification.");
-  }
+  const validChart =
+    isRecord(chart) &&
+    ["bar", "line", "none"].includes(chartType) &&
+    typeof chart.reason === "string" &&
+    chart.reason.trim() &&
+    validAxes;
 
   return {
     analysis: {
@@ -100,8 +98,13 @@ export function parseAnalysis(
       insights: parsedInsights,
       caveats: caveats as string[],
     },
-    chart: chart as ChartSpec,
-    followUpQuestions: followUpQuestions as string[],
+    chart: validChart
+      ? chart as ChartSpec
+      : { type: "none", reason: "Model returned an invalid chart specification." },
+    followUpQuestions: Array.isArray(followUpQuestions) &&
+      followUpQuestions.every((item) => typeof item === "string")
+      ? followUpQuestions
+      : [],
   };
 }
 
@@ -148,9 +151,17 @@ export async function parseAnalysisWithOneRetry(
   }
 }
 
+function samplingCaveat(profile: ResultProfile) {
+  return profile.sampleRows.length < profile.rowCount
+    ? `Analysis evidence samples ${profile.sampleRows.length} of ${profile.rowCount} returned rows.`
+    : undefined;
+}
+
 function caveatsFromProfile(profile: ResultProfile) {
+  const sampling = samplingCaveat(profile);
   return [
     ...(profile.truncated ? ["Results were limited to 1000 rows."] : []),
+    ...(sampling ? [sampling] : []),
     ...profile.columns
       .filter(({ nullCount }) => nullCount > 0)
       .map(({ name, nullCount }) => `${name} contains ${nullCount} null values.`),
@@ -278,6 +289,7 @@ export async function analyzeResult(
   const deterministic = useDeterministic
     ? deterministicAnalysis(question, sql, profile)
     : undefined;
+  const sampling = samplingCaveat(profile);
   if (deterministic) return deterministic;
 
   const allowedCaveats = caveatsFromProfile(profile);
@@ -285,18 +297,23 @@ export async function analyzeResult(
   const numericColumns = profile.columns
     .filter(({ type }) => type === "number")
     .map(({ name }) => name);
-  const requestAnalysis = (correction?: string) => completeChat(
+  const requestAnalysis = (correction?: string) => atStage(
+    "analysis",
+    correction ? 2 : 1,
+    () => completeChat(
     [
       {
         role: "system",
         content: [
-          "You are a grounded ecommerce data analyst.",
+          "You are a grounded data analyst.",
           "Return only valid JSON with analysis, chart, and followUpQuestions.",
           "Every insight needs at least one evidence string copied exactly from allowedEvidence.",
           "The summary needs at least one summaryEvidence string copied exactly from allowedEvidence.",
           "When the summary says highest or lowest, copy both the exact entity label and metric value into summaryEvidence.",
           "Every caveat must be copied exactly from allowedCaveats. Return no caveats when allowedCaveats is empty.",
-          "Do not state numbers that are not present in the evidence.",
+          "Profile column statistics cover all returned rows; allowedEvidence is a representative sample when sampledRows is smaller than rowCount.",
+          "Do not claim exhaustive entity coverage from sampled evidence, and include the sampling caveat when one is allowed.",
+          "Numbers must come from evidence or profile statistics, but may be rounded or expressed as percentages or standard magnitude units.",
           "You must recommend a chart type: bar, line, or none.",
           "For bar or line, choose one xKey and exactly one numeric yKey from the returned columns.",
           "Choose none when a chart would not improve understanding. Include a concise reason.",
@@ -310,6 +327,7 @@ export async function analyzeResult(
           sql,
           profile: {
             rowCount: profile.rowCount,
+            sampledRows: profile.sampleRows.length,
             truncated: profile.truncated,
             columns: profile.columns,
           },
@@ -341,7 +359,7 @@ export async function analyzeResult(
     ],
     {
       maxTokens: tokenBudget("OPENAI_ANALYSIS_MAX_TOKENS", 2400),
-      reasoningEffort: "low",
+      reasoningEffort: stageReasoningEffort("OPENAI_ANALYSIS_REASONING_EFFORT", Boolean(correction)),
       temperature: 0,
       responseFormat: {
         type: "json_object",
@@ -415,13 +433,18 @@ export async function analyzeResult(
         },
       },
     },
+    ),
   );
 
-  return parseAnalysisWithOneRetry(
+  const analyzed = await parseAnalysisWithOneRetry(
     requestAnalysis,
     columns,
     allowedEvidence,
     numericColumns,
     allowedCaveats,
   );
+  if (sampling && !analyzed.analysis.caveats.includes(sampling)) {
+    analyzed.analysis.caveats.push(sampling);
+  }
+  return analyzed;
 }

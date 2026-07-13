@@ -1,8 +1,8 @@
 # Private AI Analytics Assistant
 
 Portfolio project for an AI engineer: a TypeScript web app that turns business
-questions into safe SQL, executes them on the Olist ecommerce dataset, and
-visualizes the result.
+questions into safe SQL, executes them on one active SQLite dataset, and
+visualizes grounded results.
 
 ## Stack
 
@@ -14,7 +14,7 @@ visualizes the result.
 
 ## MVP
 
-- Inspect the ecommerce database schema.
+- Inspect the active database schema.
 - Ask a business question in natural language.
 - Generate SQL with schema context.
 - Block unsafe SQL before execution.
@@ -28,31 +28,31 @@ visualizes the result.
    npm install
    ```
 
-2. Put the Olist CSV files in `data/`.
+2. Install one SQLite database as `data/active.db`. Optional dataset-specific
+   context can be added as `data/dataset.md` and `data/semantic.json`.
 
-3. Build the local SQLite database:
+   The database can also live elsewhere:
+
+   ```bash
+   ACTIVE_DATABASE_PATH=/path/to/database.sqlite
+   ```
+
+   For the included Olist CSV importer, put the CSV files in `data/` and run:
 
    ```bash
    npm run build-db
    ```
 
-4. Add local environment variables:
+3. Add local environment variables:
 
    ```bash
    cp .env.example .env.local
    ```
 
-5. Start a local llama.cpp server:
+4. Configure any OpenAI-compatible provider through `OPENAI_BASE_URL`,
+   `OPENAI_API_KEY`, and `OPENAI_MODEL`.
 
-   ```bash
-   llama serve -hf unsloth/Qwen3.5-9B-GGUF:UD-Q3_K_XL --no-mmproj --ctx-size 4096 --parallel 1 --gpu-layers all --fit off --batch-size 512 --ubatch-size 256 --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 --reasoning off --reasoning-budget 0 --chat-template-kwargs '{"enable_thinking":false}'
-   ```
-
-   The app expects the OpenAI-compatible endpoint at
-   `http://127.0.0.1:8080/v1`. You can also point `OPENAI_BASE_URL` at another
-   OpenAI-compatible provider.
-
-6. Run the app:
+5. Run the app:
 
    ```bash
    npm run dev
@@ -60,8 +60,9 @@ visualizes the result.
 
    Open `http://localhost:4000`.
 
-The `data/` directory is ignored by Git because the Kaggle files and generated
-database should stay local.
+The app introspects tables, column types, primary keys, and declared foreign
+keys at runtime. Replacing the active database does not require code changes.
+The `data/` directory is ignored by Git because datasets should stay local.
 
 ## Product Roadmap
 

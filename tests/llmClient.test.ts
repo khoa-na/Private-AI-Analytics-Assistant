@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { completeChat, completeChatMessage, tokenBudget } from "../lib/llmClient";
+import { completeChat, completeChatMessage, stageReasoningEffort, tokenBudget } from "../lib/llmClient";
 
 const originalFetch = globalThis.fetch;
 const originalApiKey = process.env.OPENAI_API_KEY;
@@ -15,6 +15,11 @@ try {
   process.env.TEST_TOKEN_BUDGET = "invalid";
   assert.equal(tokenBudget("TEST_TOKEN_BUDGET", 10), 10);
   delete process.env.TEST_TOKEN_BUDGET;
+  process.env.OPENAI_PLAN_REASONING_EFFORT = "medium";
+  assert.equal(stageReasoningEffort("OPENAI_PLAN_REASONING_EFFORT"), "medium");
+  process.env.OPENAI_PLAN_REASONING_EFFORT = "low";
+  assert.equal(stageReasoningEffort("OPENAI_PLAN_REASONING_EFFORT", true), "medium");
+  delete process.env.OPENAI_PLAN_REASONING_EFFORT;
 
   let requestBody: Record<string, unknown> | undefined;
   globalThis.fetch = async (_input, init) => {
@@ -77,14 +82,13 @@ try {
       }),
       { status: 200 },
     );
-  await assert.rejects(
-    () =>
-      completeChat([{ role: "user", content: "test" }], {
-        maxTokens: 10,
-        temperature: 0,
-        responseFormat: { type: "json_object" },
-      }),
-    /did not return structured output/,
+  assert.equal(
+    await completeChat([{ role: "user", content: "test" }], {
+      maxTokens: 10,
+      temperature: 0,
+      responseFormat: { type: "json_object" },
+    }),
+    '{"intent":"query"}',
   );
 
   globalThis.fetch = async (_input, init) => {

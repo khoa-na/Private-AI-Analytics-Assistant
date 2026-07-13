@@ -23,4 +23,9 @@ assert.deepEqual(profile.columns[1], {
 });
 assert.equal(profile.columns[2].type, "null");
 
+assert.deepEqual(
+  profileResult([0, 99, 2, 3, 4].map((value) => ({ value })), 3).sampleRows,
+  [{ value: 0 }, { value: 99 }, { value: 4 }],
+);
+
 console.log("resultProfile tests passed");

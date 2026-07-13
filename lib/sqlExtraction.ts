@@ -1,22 +1,43 @@
+import { parseLastJsonObject } from "./jsonOutput";
+import { validateReadOnlySql } from "./sqlSafety";
+
 export function extractSqlFromModelOutput(output: string) {
   const trimmed = output.trim();
   if (!trimmed) throw new Error("Model returned an empty response.");
 
+  const candidates: string[] = [];
   try {
-    const parsed = JSON.parse(trimmed) as { sql?: unknown };
+    const parsed = parseLastJsonObject(trimmed) as { sql?: unknown };
     if (typeof parsed.sql === "string" && parsed.sql.trim()) {
-      return parsed.sql.trim();
+      candidates.push(parsed.sql.trim());
     }
   } catch {
-    // Local llama.cpp models often ignore JSON mode; fall through to SQL extraction.
+    // Most providers return plain SQL; JSON is only a compatibility path.
   }
 
-  const fenced = trimmed.match(/```(?:sql)?\s*([\s\S]*?)```/i);
-  const candidate = fenced?.[1] ?? trimmed;
-  const match = candidate.match(/\b(WITH|SELECT)\b[\s\S]*/i);
-  if (!match) throw new Error("Model response did not contain SQL.");
+  const addCandidate = (text: string) => {
+    const match = text.match(/\b(WITH|SELECT)\b[\s\S]*/i);
+    if (!match) return;
+    const semicolon = match[0].indexOf(";");
+    candidates.push((semicolon >= 0 ? match[0].slice(0, semicolon + 1) : match[0]).trim());
+  };
 
-  const sql = match[0].trim();
-  const semicolon = sql.indexOf(";");
-  return semicolon >= 0 ? sql.slice(0, semicolon + 1) : sql;
+  const fences = [...trimmed.matchAll(/```(?:sql)?\s*([\s\S]*?)```/gi)];
+  for (const fence of fences.reverse()) addCandidate(fence[1]);
+
+  const sections = trimmed.split(/<\/think>|<\|end(?:_of_)?thinking\|>|<｜end▁of▁thinking｜>/gi);
+  addCandidate(sections.at(-1) ?? trimmed);
+  if (sections.length > 1) addCandidate(trimmed);
+
+  for (const candidate of candidates) {
+    try {
+      validateReadOnlySql(candidate);
+      return candidate;
+    } catch {
+      // Try the next provider-output candidate; execution owns the final error.
+    }
+  }
+
+  if (!candidates.length) throw new Error("Model response did not contain SQL.");
+  return candidates[0];
 }

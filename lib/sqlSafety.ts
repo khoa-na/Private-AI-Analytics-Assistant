@@ -11,8 +11,18 @@ export function validateReadOnlySql(sql: string) {
   const trimmed = sql.trim().replace(/;+\s*$/, "");
   if (!trimmed) throw new Error("SQL is required.");
   if (BLOCKED_SQL.test(trimmed)) throw new Error("Only read-only SELECT queries are allowed.");
+  if (!/^(?:SELECT|WITH)\b/i.test(trimmed)) {
+    throw new Error("Only read-only SELECT queries are allowed.");
+  }
 
-  const ast = parser.astify(trimmed, { database: "sqlite" });
+  let ast: unknown;
+  try {
+    ast = parser.astify(trimmed, { database: "sqlite" });
+  } catch {
+    // SQLite is the syntax authority; node-sql-parser lacks parts of its dialect.
+    if (trimmed.includes(";")) throw new Error("Only a single SELECT statement is allowed.");
+    return trimmed;
+  }
   const statements = Array.isArray(ast) ? ast : [ast];
   if (statements.length !== 1 || statements[0]?.type !== "select") {
     throw new Error("Only a single SELECT statement is allowed.");

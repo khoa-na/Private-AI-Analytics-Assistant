@@ -29,6 +29,14 @@ type ChatCompletionOptions = {
   toolChoice?: string | Record<string, unknown>;
 };
 
+export function stageReasoningEffort(name: string, retry = false) {
+  const value = process.env[name] ?? process.env.OPENAI_REASONING_EFFORT;
+  const effort = ["low", "medium", "high"].includes(value ?? "")
+    ? value as ChatCompletionOptions["reasoningEffort"]
+    : undefined;
+  return retry && effort === "low" ? "medium" : effort;
+}
+
 type ChatCompletionResponse = {
   choices?: Array<{
     finish_reason?: string;
@@ -108,10 +116,11 @@ export async function completeChat(
     throw new Error("Model exhausted its token budget before returning an answer.");
   }
   if (options.responseFormat) {
-    if (!message?.content?.trim()) {
+    const output = message?.content?.trim() || message?.reasoning_content?.trim();
+    if (!output) {
       throw new Error("Model did not return structured output.");
     }
-    return message.content;
+    return output;
   }
   return message?.content || message?.reasoning_content || "";
 }
