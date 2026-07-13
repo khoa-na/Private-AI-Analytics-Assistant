@@ -5,7 +5,7 @@ import { parse } from "csv-parse";
 
 const root = process.cwd();
 const dataDir = join(root, "data");
-const dbPath = join(dataDir, "olist.sqlite");
+const dbPath = join(dataDir, "active.db");
 
 const tables: Record<string, string> = {
   "olist_customers_dataset.csv": "customers",

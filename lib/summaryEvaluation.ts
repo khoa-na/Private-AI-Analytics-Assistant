@@ -1,6 +1,26 @@
 import type { ResultProfile, Row } from "./analyticsTypes";
 import { evidenceFromRows } from "./llmAnalysis";
 
+export function hasExpectedFacts(rows: Row[], patterns: string[] = []) {
+  const values = rows.flatMap((row) => Object.values(row)).map(String);
+  return patterns.every((pattern) => {
+    const valuePattern = pattern.includes(" = ") ? pattern.split(" = ").at(-1)! : pattern;
+    return values.some((value) => new RegExp(`^${valuePattern}$`, "i").test(value));
+  });
+}
+
+export type ExpectedFact = { value: string | number; tolerance?: number };
+
+export function evaluateExpectedFacts(rows: Row[], facts: ExpectedFact[] = []) {
+  const values = rows.flatMap((row) => Object.values(row)).filter((value) => value !== null);
+  return facts.every((fact) => values.some((value) => {
+    if (typeof fact.value === "number" && typeof value === "number") {
+      return Math.abs(value - fact.value) <= (fact.tolerance ?? 0);
+    }
+    return String(value).toLowerCase() === String(fact.value).toLowerCase();
+  }));
+}
+
 function numericCandidates(token: string) {
   const value = token.replace(/[.,]+$/, "");
   const candidates = new Set<number>();
@@ -21,7 +41,44 @@ function numericCandidates(token: string) {
 
 function numbersIn(text: string) {
   return [...text.matchAll(/(?<![A-Za-z0-9])[-+]?\d[\d.,]*(?![A-Za-z0-9])/g)].map(
-    ([token]) => ({ token, candidates: numericCandidates(token) }),
+    (match) => {
+      const token = match[0];
+      const candidates = numericCandidates(token);
+      const suffix = text.slice((match.index ?? 0) + token.length);
+      const scale = /^\s*(?:%|percent(?:age)?\b|phần trăm\b)/i.test(suffix)
+        ? 0.01
+        : /^\s*(?:thousand\b|nghìn\b|ngàn\b)/i.test(suffix)
+          ? 1_000
+          : /^\s*(?:million\b|triệu\b)/i.test(suffix)
+            ? 1_000_000
+            : /^\s*(?:billion\b|tỷ\b|tỉ\b)/i.test(suffix)
+              ? 1_000_000_000
+              : undefined;
+      return {
+        token,
+        candidates: scale ? [...candidates, ...candidates.map((value) => value * scale)] : candidates,
+      };
+    },
+  );
+}
+
+function supportsThreshold(summary: string, token: string, rows: Row[]) {
+  const thresholdToken = token.replace(/[.,]+$/, "");
+  const escaped = thresholdToken.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const lower = new RegExp(
+    `(?:under|below|fewer than|less than|dưới|ít hơn|thấp hơn)\\s+${escaped}\\b`,
+    "i",
+  ).test(summary);
+  const upper = new RegExp(
+    `(?:over|above|more than|greater than|trên|nhiều hơn|cao hơn)\\s+${escaped}\\b`,
+    "i",
+  ).test(summary);
+  if (!lower && !upper) return false;
+  const values = rows.flatMap((row) => Object.values(row)).filter(
+    (value): value is number => typeof value === "number",
+  );
+  return numericCandidates(thresholdToken).some((threshold) =>
+    values.some((value) => lower ? value < threshold : value > threshold),
   );
 }
 
@@ -109,11 +166,15 @@ export function evaluateSummary(
     ...[...allowedEvidence].flatMap((evidence) =>
       numbersIn(evidence).flatMap(({ candidates }) => candidates),
     ),
+    ...profile.columns.flatMap(({ min, max, average }) => [min, max, average]).filter(
+      (value): value is number => typeof value === "number",
+    ),
     profile.rowCount,
     ...(profile.truncated ? [1000] : []),
   ];
   const unsupportedNumbers = numbersIn(summary)
-    .filter(({ candidates }) =>
+    .filter(({ token, candidates }) =>
+      !supportsThreshold(summary, token, rows) &&
       !candidates.some((candidate) =>
         allowedNumbers.some(
           (allowed) => Math.abs(candidate - allowed) <= Math.max(0.01, Math.abs(allowed) * 0.001),

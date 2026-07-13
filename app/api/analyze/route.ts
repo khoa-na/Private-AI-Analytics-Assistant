@@ -7,8 +7,8 @@ import { runMultiQueryPlan } from "@/lib/multiQuery";
 export async function POST(request: Request) {
   try {
     const { question } = (await request.json()) as { question?: string };
-    if (!question?.trim()) {
-      return NextResponse.json({ error: "Question is required." }, { status: 400 });
+    if (!question?.trim() || question.length > 2000) {
+      return NextResponse.json({ error: "Question must be between 1 and 2000 characters." }, { status: 400 });
     }
 
     const generated = await generateAndRunQuery(question);

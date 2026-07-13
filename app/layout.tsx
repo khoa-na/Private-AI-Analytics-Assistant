@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Private AI Analytics Assistant",
-  description: "Natural-language analytics over the Olist ecommerce dataset.",
+  description: "Grounded natural-language analytics over an active SQLite dataset.",
 };
 
 export default function RootLayout({

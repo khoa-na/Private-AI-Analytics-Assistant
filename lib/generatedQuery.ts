@@ -1,6 +1,8 @@
 import { generateSql, type SqlCorrection } from "./llmSql";
 import type { IntentResponse } from "./queryPlan";
 import { runReadOnlyQuery, type QueryResult } from "./queryRunner";
+import { PipelineStageError } from "./pipelineError";
+import { validateReadOnlySql } from "./sqlSafety";
 
 type Generator = (
   question: string,
@@ -25,33 +27,57 @@ export async function generateAndRunQuery(
     }
   }
 
-  function runTimed(sql: string) {
+  function runTimed(sql: string, attempt: number) {
     const started = Date.now();
     try {
+      try {
+        validateReadOnlySql(sql);
+      } catch (error) {
+        throw new PipelineStageError(
+          "sql",
+          error instanceof Error ? error.message : String(error),
+          attempt,
+        );
+      }
       return run(sql);
+    } catch (error) {
+      throw error instanceof PipelineStageError
+        ? error
+        : new PipelineStageError(
+            "execution",
+            error instanceof Error ? error.message : String(error),
+            attempt,
+          );
     } finally {
       queryMs += Date.now() - started;
     }
   }
 
-  let generated = await generateTimed();
-  if (typeof generated !== "string") {
-    return { ...generated, sqlGenerationMs, queryMs };
-  }
-  let sql = generated;
-  let result: QueryResult;
-  try {
-    result = runTimed(sql);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Query failed.";
-    if (/Database not found/i.test(message)) throw error;
-    generated = await generateTimed({ sql, error: message });
+  const sqlAttempts: Array<{ attempt: number; sql: string; error: string }> = [];
+  let correction: SqlCorrection | undefined;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    let generated: Awaited<ReturnType<Generator>>;
+    try {
+      generated = await generateTimed(correction);
+    } catch (error) {
+      if (error instanceof PipelineStageError) error.sqlAttempts = sqlAttempts;
+      throw error;
+    }
     if (typeof generated !== "string") {
       return { ...generated, sqlGenerationMs, queryMs };
     }
-    sql = generated;
-    result = runTimed(sql);
+    try {
+      const result = runTimed(generated, attempt);
+      return { intent: "query" as const, result, sqlGenerationMs, queryMs };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Query failed.";
+      sqlAttempts.push({ attempt, sql: generated, error: message });
+      if (/Database not found/i.test(message) || attempt === 3) {
+        if (error instanceof PipelineStageError) error.sqlAttempts = sqlAttempts;
+        throw error;
+      }
+      correction = { sql: generated, error: message, attempt: attempt + 1 };
+    }
   }
-
-  return { intent: "query" as const, result, sqlGenerationMs, queryMs };
+  throw new Error("Query generation failed.");
 }

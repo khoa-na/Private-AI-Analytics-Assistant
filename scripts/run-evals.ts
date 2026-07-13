@@ -1,10 +1,24 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { analyzeResult } from "../lib/llmAnalysis";
 import { generateAndRunQuery } from "../lib/generatedQuery";
 import { profileResult } from "../lib/resultProfile";
-import { evaluateSummary } from "../lib/summaryEvaluation";
+import {
+  evaluateExpectedFacts,
+  evaluateSummary,
+  hasExpectedFacts,
+  type ExpectedFact,
+} from "../lib/summaryEvaluation";
 import { runMultiQueryPlan } from "../lib/multiQuery";
+import { AnalysisPlanError } from "../lib/llmQueryPlan";
+import { PipelineStageError } from "../lib/pipelineError";
+import { tokenBudget } from "../lib/llmClient";
+
+process.env.ACTIVE_DATASET_GUIDE_PATHS ??= [
+  "docs/datasets/olist.md",
+  "docs/datasets/olist.semantic.json",
+  "docs/datasets/sql-playbook.md",
+].join(delimiter);
 
 type EvalCase = {
   id: string;
@@ -21,13 +35,18 @@ type EvalCase = {
   expectedSummaryPatterns?: string[];
   forbiddenSummaryPatterns?: string[];
   expectedStepTableGroups?: string[][];
+  expectedFacts?: ExpectedFact[];
 };
 
 const cases = JSON.parse(readFileSync("evals/questions.json", "utf8")) as EvalCase[];
 const categoryArg = process.argv.find((arg) => arg.startsWith("--category="));
+const idsArg = process.argv.find((arg) => arg.startsWith("--ids="));
 const limitArg = process.argv.find((arg) => arg.startsWith("--limit="));
 const category = categoryArg?.split("=")[1];
-const filtered = category ? cases.filter((test) => test.category === category) : cases;
+const ids = new Set(idsArg?.split("=")[1].split(",").filter(Boolean));
+const filtered = cases.filter(
+  (test) => (!category || test.category === category) && (!ids.size || ids.has(test.id)),
+);
 const selected = limitArg ? filtered.slice(0, Number(limitArg.split("=")[1])) : filtered;
 const results = [];
 
@@ -49,11 +68,6 @@ for (const [index, test] of selected.entries()) {
         execution: true,
         mode: test.outputShape === "multi_query",
         stepCount: multi.steps.length >= 2 && multi.steps.length <= 3,
-        tables: (test.expectedStepTableGroups ?? []).every((group) =>
-          sqlByStep.some((sql) =>
-            group.every((table) => new RegExp(`\\b${table}\\b`, "i").test(sql)),
-          ),
-        ),
         summaryPresent: Boolean(multi.analysis.summary.trim()),
         summaryEvidence: multi.analysis.summaryEvidence.length > 0,
       };
@@ -62,6 +76,13 @@ for (const [index, test] of selected.entries()) {
         ...test,
         passed,
         automatic,
+        diagnostics: {
+          expectedStepTables: (test.expectedStepTableGroups ?? []).every((group) =>
+            sqlByStep.some((sql) =>
+              group.every((table) => new RegExp(`\\b${table}\\b`, "i").test(sql)),
+            ),
+          ),
+        },
         semanticChecks: test.checks.map((check) => ({ check, verified: null })),
         steps: multi.steps,
         analysis: multi.analysis,
@@ -100,7 +121,7 @@ for (const [index, test] of selected.entries()) {
       analyzed.analysis.summaryEvidence,
       analyzed.analysis.caveats,
       profile,
-      test.expectedSummaryPatterns,
+      [],
       test.forbiddenSummaryPatterns,
       generated.result.rows,
     );
@@ -108,18 +129,11 @@ for (const [index, test] of selected.entries()) {
     const automatic = {
       execution: true,
       refusal: !test.refuse,
-      tables: test.expectedTables.every((table) => new RegExp(`\\b${table}\\b`, "i").test(sql)),
       outputShape: hasExpectedShape(test.outputShape, profile.rowCount),
       caveat: !test.caveat || analyzed.analysis.caveats.length > 0,
-      requiredSql: (test.requiredSqlPatterns ?? []).every((pattern) =>
-        new RegExp(pattern, "i").test(sql),
-      ),
-      forbiddenSql: (test.forbiddenSqlPatterns ?? []).every(
-        (pattern) => !new RegExp(pattern, "i").test(sql),
-      ),
-      columns: (test.expectedColumns ?? []).every((column) =>
-        generated.result.columns.includes(column),
-      ),
+      resultFacts: test.expectedFacts
+        ? evaluateExpectedFacts(generated.result.rows, test.expectedFacts)
+        : hasExpectedFacts(generated.result.rows, test.expectedSummaryPatterns),
       summaryPresent: summaryEvaluation.present,
       summaryEvidence: summaryEvaluation.evidenceValid,
       summaryNumbers: summaryEvaluation.numbersGrounded,
@@ -133,6 +147,23 @@ for (const [index, test] of selected.entries()) {
       ...test,
       passed,
       automatic,
+      diagnostics: {
+        expectedTables: test.expectedTables.every((table) =>
+          new RegExp(`\\b${table}\\b`, "i").test(sql),
+        ),
+        requiredSql: (test.requiredSqlPatterns ?? []).every((pattern) =>
+          new RegExp(pattern, "i").test(sql),
+        ),
+        forbiddenSql: (test.forbiddenSqlPatterns ?? []).every(
+          (pattern) => !new RegExp(pattern, "i").test(sql),
+        ),
+        expectedColumns: (test.expectedColumns ?? []).every((column) =>
+          generated.result.columns.includes(column),
+        ),
+        expectedSummaryPatterns: (test.expectedSummaryPatterns ?? []).every((pattern) =>
+          new RegExp(pattern, "i").test(analyzed.analysis.summary),
+        ),
+      },
       semanticChecks: test.checks.map((check) => ({ check, verified: null })),
       sql: generated.result.sql,
       rowCount: profile.rowCount,
@@ -154,6 +185,14 @@ for (const [index, test] of selected.entries()) {
       automatic: { execution: false, refusal: false },
       semanticChecks: test.checks.map((check) => ({ check, verified: null })),
       error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof PipelineStageError
+        ? {
+            failureStage: error.stage,
+            failureAttempt: error.attempt,
+            ...(error.sqlAttempts?.length ? { sqlAttempts: error.sqlAttempts } : {}),
+          }
+        : {}),
+      ...(error instanceof AnalysisPlanError ? { plannerOutputs: error.outputs } : {}),
       timings: { totalMs: Date.now() - started },
     });
     console.log("FAIL");
@@ -164,7 +203,24 @@ const passed = results.filter((result) => result.passed).length;
 const report = {
   createdAt: new Date().toISOString(),
   model: process.env.OPENAI_MODEL ?? "unknown",
-  summary: { total: results.length, passed, failed: results.length - passed },
+  reasoning: {
+    plan: process.env.OPENAI_PLAN_REASONING_EFFORT ?? process.env.OPENAI_REASONING_EFFORT ?? "provider-default",
+    sql: process.env.OPENAI_SQL_REASONING_EFFORT ?? process.env.OPENAI_REASONING_EFFORT ?? "provider-default",
+    analysis: process.env.OPENAI_ANALYSIS_REASONING_EFFORT ?? process.env.OPENAI_REASONING_EFFORT ?? "provider-default",
+  },
+  tokenBudgets: {
+    plan: tokenBudget("OPENAI_PLAN_MAX_TOKENS", 2400),
+    sql: tokenBudget("OPENAI_SQL_MAX_TOKENS", 4096),
+    analysis: tokenBudget("OPENAI_ANALYSIS_MAX_TOKENS", 2400),
+  },
+  summary: {
+    total: results.length,
+    passed,
+    failed: results.length - passed,
+    factCases: selected.filter(
+      (test) => test.expectedFacts?.length || test.expectedSummaryPatterns?.length,
+    ).length,
+  },
   results,
 };
 mkdirSync("evals/results", { recursive: true });

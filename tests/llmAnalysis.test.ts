@@ -46,16 +46,14 @@ assert.throws(
 );
 const invalidChart = JSON.parse(valid);
 invalidChart.chart.yKeys = ["month"];
-assert.throws(
-  () =>
-    parseAnalysis(
-      JSON.stringify(invalidChart),
-      ["month", "revenue"],
-      evidenceFromRows(rows),
-      ["revenue"],
-    ),
-  /chart specification/,
+const salvaged = parseAnalysis(
+  JSON.stringify(invalidChart),
+  ["month", "revenue"],
+  evidenceFromRows(rows),
+  ["revenue"],
 );
+assert.equal(salvaged.chart.type, "none");
+assert.equal(salvaged.analysis.summary, "Revenue was 10.");
 let attempts = 0;
 assert.equal(
   (

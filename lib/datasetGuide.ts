@@ -1,22 +1,24 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 
-const GUIDES: Record<string, string[]> = {
-  olist: [
-    join(process.cwd(), "docs", "datasets", "olist.md"),
-    join(process.cwd(), "docs", "datasets", "olist.semantic.json"),
-    join(process.cwd(), "docs", "datasets", "sql-playbook.md"),
-  ],
-};
-export const DATASET_IDS = Object.freeze(Object.keys(GUIDES));
-
-export function getDatasetGuide(dataset: string) {
-  const paths = GUIDES[dataset];
-  if (!paths) throw new Error(`Unknown dataset: ${dataset}`);
-
-  const guide = paths.map((path) => readFileSync(path, "utf8").trim()).join("\n\n");
-  if (Buffer.byteLength(guide) > 12_000) {
-    throw new Error(`Dataset guide is too large: ${dataset}`);
+function getGuidePaths() {
+  const configured = process.env.ACTIVE_DATASET_GUIDE_PATHS;
+  if (!configured) {
+    return [join(process.cwd(), "data", "dataset.md"), join(process.cwd(), "data", "semantic.json")];
   }
-  return guide;
+  return configured.split(delimiter).filter(Boolean).map((path) =>
+    isAbsolute(path) ? path : resolve(process.cwd(), path),
+  );
+}
+
+export function getDatasetGuide() {
+  const guide = getGuidePaths()
+    .filter(existsSync)
+    .map((path) => readFileSync(path, "utf8").trim())
+    .filter(Boolean)
+    .join("\n\n");
+  if (Buffer.byteLength(guide) > 12_000) {
+    throw new Error("Active dataset guide is larger than 12 KB.");
+  }
+  return guide || "No dataset-specific semantics are installed. Use only the database schema and ask for clarification when a business measure is ambiguous.";
 }

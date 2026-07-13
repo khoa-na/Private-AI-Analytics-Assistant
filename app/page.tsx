@@ -6,12 +6,11 @@ import { InsightPanel } from "@/components/InsightPanel";
 import { ResultTable } from "@/components/ResultTable";
 import { SchemaSidebar } from "@/components/SchemaSidebar";
 import type { Analysis, AnalysisStep, ChartSpec, Row, Schema } from "@/lib/analyticsTypes";
-import { EXAMPLES } from "@/lib/examples";
 import styles from "./page.module.css";
 
 export default function Home() {
   const [schema, setSchema] = useState<Schema>({});
-  const [question, setQuestion] = useState<string>(EXAMPLES[0].question);
+  const [question, setQuestion] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
   const [columns, setColumns] = useState<string[]>([]);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
@@ -136,23 +135,6 @@ export default function Home() {
             void analyze();
           }}
         >
-          <div className={styles.examples}>
-            {EXAMPLES.map((example) => (
-              <button
-                className="secondary"
-                type="button"
-                key={example.label}
-                onClick={() => {
-                  setQuestion(example.question);
-                  clearResult();
-                  setMessage("Example loaded. Click Analyze to run it.");
-                }}
-              >
-                {example.label}
-              </button>
-            ))}
-          </div>
-
           <label>
             Business question
             <input

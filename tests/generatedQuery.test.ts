@@ -28,7 +28,8 @@ if (repaired.intent !== "query") throw new Error("Expected query result.");
 assert.equal(repaired.result, output);
 assert.deepEqual(corrections[1], {
   sql: generated[0],
-  error: "ambiguous column name: product_id",
+  error: "[execution:1] ambiguous column name: product_id",
+  attempt: 2,
 });
 
 const clarification = await generateAndRunQuery(
@@ -38,6 +39,13 @@ const clarification = await generateAndRunQuery(
 assert.deepEqual(
   { intent: clarification.intent, message: "message" in clarification ? clarification.message : "" },
   { intent: "clarification", message: "Define best." },
+);
+
+await assert.rejects(
+  () => generateAndRunQuery("broken", async () => "SELECT broken", () => {
+    throw new Error("no such column: broken");
+  }),
+  /\[execution:3\] no such column/,
 );
 
 console.log("generatedQuery tests passed");

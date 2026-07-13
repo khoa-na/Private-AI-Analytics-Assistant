@@ -1,6 +1,12 @@
 {
   "dataset": "olist",
   "dialect": "sqlite",
+  "analysis_policy": {
+    "forecasting": "unsupported because the dataset contains historical facts and defines no forecasting method",
+    "unavailable_product_names": "unsupported; product IDs and translated categories may be offered as alternatives",
+    "merchandise_revenue": "SUM(order_items.price), excluding freight and payments",
+    "qualitative_comparisons": "when the measure is explicit, return its rankings or grouped values and use above/below average during synthesis when no threshold is given; never invent a measure for generic words such as performance, best, strong, or weak"
+  },
   "entities": {
     "order": { "table": "orders", "key": "order_id" },
     "product": { "table": "products", "key": "product_id" },
