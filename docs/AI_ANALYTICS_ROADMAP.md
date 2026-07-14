@@ -18,7 +18,7 @@ receive:
 The assistant must never present an unsupported number as a fact. Every numeric
 claim in the answer must be traceable to an executed query result.
 
-## Current baseline
+## Current implementation baseline
 
 The repository already provides the execution foundation:
 
@@ -31,11 +31,15 @@ The repository already provides the execution foundation:
 | Default result limit | Implemented |
 | Result table | Implemented |
 | Basic bar and line charts | Implemented |
-| Narrative analysis | Missing |
+| Grounded narrative analysis | Implemented |
+| One-retry SQL recovery | Implemented |
+| Bounded multi-query analysis | Implemented |
+| Evaluation dataset and metrics | Implemented: 73 cases |
+| Generic dataset import and profiling | Implemented |
+| Semantic review and approval state machine | Implemented |
 | Follow-up conversation | Missing |
-| Evaluation dataset and metrics | Missing |
-| Multi-query analysis | Missing |
-| Observability | Missing |
+| Query timeout and cancellation | Missing |
+| Production observability | Partial: request and eval timings |
 
 ## Design principles
 
@@ -49,6 +53,26 @@ The repository already provides the execution foundation:
    private machine unless the user deliberately configures another provider.
 5. **Measure before adding complexity.** Add retrieval, multiple agents, or a
    framework only when evaluation data shows a real need.
+
+## Technology and scaling direction
+
+TypeScript and Next.js remain the primary application stack. The current UI,
+API, LLM orchestration, SQL safety, dataset lifecycle, and evaluation pipeline
+share one typed implementation; a FastAPI rewrite would duplicate working code
+without removing the actual scaling constraints.
+
+Scale in this order:
+
+1. Keep the local-first TypeScript application while usage is single-node.
+2. Move long SQLite queries, imports, and reviews to separate TypeScript worker
+   processes when concurrent requests begin blocking the web process.
+3. Move job and dataset metadata to PostgreSQL and immutable bundles to object
+   storage when multiple application instances need shared state.
+4. Replace SQLite with an analytical database or warehouse when measured query
+   latency, concurrency, or dataset size requires it.
+5. Add a Python worker only for Python-native workloads such as forecasting,
+   statistical modeling, notebooks, or machine learning. Do not rewrite the
+   Next.js application solely to introduce Python.
 
 ## Target architecture
 
@@ -71,6 +95,26 @@ flowchart LR
 
 The SQL generator and grounded analyst can use the same local model, but they
 have separate prompts and output contracts.
+
+## Phase 0: Generic dataset onboarding — completed
+
+### Goal
+
+Turn an operator-provided SQLite database or CSV/TSV directory into one
+integrity-checked active analytical dataset with inspectable context.
+
+### Implemented flow
+
+1. `dataset:import` builds SQLite, profiles schema and data, and writes a
+   versioned semantic draft with provenance.
+2. `dataset:review` validates database integrity, relationships, measures, and
+   evidence through a blind reviewer plus deterministic policy gates.
+3. `dataset:activate` accepts only a review-sealed approved bundle and swaps it
+   into `data/active` with crash recovery.
+
+The active bundle contains its database, compact runtime guide, structured
+semantic layer, review report, and fingerprint manifest. Re-importing a dataset
+returns it to `draft`; activation replaces the previous active dataset.
 
 ## Request lifecycle
 
@@ -129,6 +173,8 @@ detect in tests and in the UI.
 
 ## Phase 1: Grounded single-query analyst
 
+**Status:** Implemented.
+
 ### Goal
 
 Turn the current generated SQL result into a useful business answer without
@@ -174,6 +220,10 @@ Do not send all query rows back to the model. Send:
 - SQL validation and read-only execution remain unchanged.
 
 ## Phase 2: Evaluation and reliability
+
+**Status:** Implemented for the original Olist evaluation domain. The runner
+currently covers 73 English and Vietnamese cases, including 12 multi-query and
+6 refusal cases. Dataset-independent evaluation is the next milestone.
 
 ### Goal
 
@@ -233,7 +283,40 @@ than model size alone.
 - Prompt or model changes can be compared against a saved baseline.
 - No release is accepted when safety or groundedness regresses.
 
+## Next milestone: Dataset-independent end-to-end evaluation
+
+### Goal
+
+Prove that an imported and approved dataset improves real analysis quality, not
+only that its database and semantic artifacts are structurally valid.
+
+### H&M baseline
+
+Create a committed evaluation pack that covers:
+
+- Row counts and neutral recorded-value aggregates.
+- Monthly trends using the documented date strategy.
+- Valid joins from transactions to articles and customers.
+- English and Vietnamese questions.
+- Ambiguous requests such as "revenue" that require a caveat because currency
+  and business meaning are not confirmed.
+- Unsafe prompts and unsupported causal claims.
+
+Store expected facts from independently executed SQL rather than exact generated
+SQL strings. Record execution rate, fact correctness, grounded insight rate,
+unsafe-query rejection, latency, model, prompt version, and active dataset
+fingerprint.
+
+### Acceptance criteria
+
+- The H&M suite is repeatable against the approved active bundle.
+- Every accepted numeric claim maps to an executed result fact.
+- Prompt or model changes can be compared with a saved baseline.
+- A release cannot regress SQL safety, groundedness, or dataset semantics.
+
 ## Phase 3: Conversational follow-ups
+
+**Status:** Planned after dataset-independent evaluation is stable.
 
 ### Goal
 
@@ -273,6 +356,9 @@ database query. Refinements may generate one new query.
 
 ## Phase 4: Bounded multi-step analysis
 
+**Status:** Implemented with at most three planned query steps and bounded
+evidence rows. Continue measuring it through the dedicated eval subset.
+
 ### Goal
 
 Answer questions that genuinely require more than one query, such as comparing
@@ -301,6 +387,9 @@ or arbitrary code execution capability.
 - Partial results are reported honestly when a step fails.
 
 ## Phase 5: Portfolio and production hardening
+
+**Status:** Partial. Local-first portfolio behavior exists; production controls
+remain future work.
 
 ### Portfolio deliverables
 
@@ -341,23 +430,24 @@ is not required to demonstrate AI engineering quality.
 - No LangChain or agent framework.
 - No vector database for the nine-table Olist schema.
 - No multiple cooperating agents.
-- No arbitrary user-uploaded databases.
+- No public, untrusted, multi-tenant dataset uploads. Local operator-controlled
+  dataset import is supported.
 - No autonomous shell or Python execution.
 - No public multi-tenant deployment.
 
 These can be reconsidered only when a measured requirement justifies them.
 
-## Recommended delivery order
+## Recommended delivery order from the current baseline
 
-1. Shared LLM client and safe query runner.
-2. Result profiler with tests.
-3. Grounded analysis prompt and response parser.
-4. `/api/analyze` orchestration endpoint.
-5. Insight panel and explicit chart specification.
-6. Evaluation dataset and runner.
-7. One-retry recovery and telemetry.
-8. Conversational follow-ups.
-9. Bounded multi-query analysis.
+1. Add the H&M dataset-independent evaluation pack and save a baseline result.
+2. Add query timeout, cancellation, and concurrency limits before public usage.
+3. Add bounded conversational follow-ups using executed SQL and evidence.
+4. Add structured operational logs, redaction, and health metrics.
+5. Move long-running work to TypeScript workers when measurements show web
+   process contention.
+6. Add shared metadata/storage and a larger analytical database only when a
+   multi-instance or data-volume requirement appears.
+7. Add an optional Python worker only for a proven Python-native analysis need.
 
 ## Definition of done
 
@@ -368,4 +458,6 @@ The project can be presented as an AI analytics assistant when it:
 - Handles empty, ambiguous, and unsupported questions honestly.
 - Passes a documented evaluation suite.
 - Reports latency and model configuration.
+- Imports, reviews, and activates a new dataset without code changes.
+- Passes a dataset-specific evaluation baseline for the active bundle.
 - Demonstrates at least one English and one Vietnamese end-to-end analysis.
