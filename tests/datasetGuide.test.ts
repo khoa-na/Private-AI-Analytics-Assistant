@@ -11,6 +11,14 @@ assert.match(getDatasetGuide(), /"forecasting": "unsupported/);
 
 const directory = mkdtempSync(join(tmpdir(), "dataset-guide-"));
 try {
+  const database = join(directory, "database.sqlite");
+  writeFileSync(database, "placeholder");
+  writeFileSync(join(directory, "dataset.runtime.md"), "custom sibling guide");
+  writeFileSync(join(directory, "semantic.json"), JSON.stringify({ schema_version: 1, status: "approved" }));
+  delete process.env.ACTIVE_DATASET_GUIDE_PATHS;
+  process.env.ACTIVE_DATABASE_PATH = database;
+  assert.match(getDatasetGuide(), /custom sibling guide/);
+
   const semantic = join(directory, "semantic.json");
   writeFileSync(semantic, JSON.stringify({
     schema_version: 1,
@@ -26,6 +34,7 @@ try {
   assert.match(guide, /confirmed_count/);
   assert.doesNotMatch(guide, /poison|provider secret/);
 } finally {
+  delete process.env.ACTIVE_DATABASE_PATH;
   rmSync(directory, { recursive: true, force: true });
 }
 

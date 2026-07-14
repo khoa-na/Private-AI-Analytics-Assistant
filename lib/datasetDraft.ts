@@ -223,6 +223,9 @@ export function validateApprovedSemantic(value: unknown, profile: DatasetProfile
   }
   const structured = value.schema_version === 1;
   if (value.schema_version !== undefined && !structured) throw new Error("Unsupported semantic schema version.");
+  if (structured && (value.dataset !== profile.dataset || value.dialect !== "sqlite")) {
+    throw new Error("semantic.json dataset or dialect does not match the staged database.");
+  }
   const tables = new Map(profile.tables.map((table) => [
     table.name,
     new Set(table.columns.map(({ name }) => name)),

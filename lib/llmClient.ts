@@ -23,6 +23,7 @@ export type ChatTool = {
 type ChatCompletionOptions = {
   maxTokens: number;
   temperature: number;
+  model?: string;
   reasoningEffort?: "low" | "medium" | "high";
   responseFormat?: Record<string, unknown>;
   tools?: ChatTool[];
@@ -59,7 +60,7 @@ export async function completeChatMessage(
   options: ChatCompletionOptions,
 ) {
   const apiKey = process.env.OPENAI_API_KEY;
-  const model = process.env.OPENAI_MODEL;
+  const model = options.model ?? process.env.OPENAI_MODEL;
   const baseURL = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
   if (!apiKey || !model) {
     throw new Error("Set OPENAI_API_KEY and OPENAI_MODEL in .env.local.");

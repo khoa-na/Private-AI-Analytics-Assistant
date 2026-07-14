@@ -67,21 +67,41 @@ visualizes grounded results.
 
    The command stages `database.sqlite`, a privacy-filtered `dataset-profile.json`,
    full `dataset-catalog.json` and `dataset.md`, compact `dataset.runtime.md`,
-   and `semantic.json` under `data/staging/<name>`. When an LLM is configured it
-   enriches the draft; otherwise the guide is generated deterministically.
+   `semantic.json`, and `bundle-manifest.json` under `data/staging/<name>`.
+   The bundle manifest fingerprints the database schema and every generated
+   artifact, so activation rejects stale or mixed files. When an LLM is configured
+   it enriches the draft; otherwise the guide is generated deterministically.
    The versioned semantic draft records provenance and validation for every
-   entity, relationship candidate, and measure candidate. Review the draft,
-   move confirmed relationship objects into `relationships`, move confirmed
-   measure objects into `measures` keyed by measure name, preserve their
-   provenance and validation fields,
-   set `semantic.json` status to `approved`, stop the development server, then run:
+   entity, relationship candidate, and measure candidate. Review it through the
+   independent approval pipeline:
+
+   ```bash
+   npm run dataset:review -- <name>
+   npm run dataset:review -- <name> --no-ai
+   ```
+
+   Review runs SQLite integrity checks, verifies inferred relationships against
+   the full database, revalidates measure SQL, writes `review-report.json`, and
+   seals the reviewed semantic fingerprint. The reviewer receives anonymous
+   measure IDs, SQL, columns, and evidence IDs; it never receives draft names,
+   descriptions, grain, or generation reasoning. It can only approve or reject.
+   Code generates neutral names and wording after the verdict. `OPENAI_MODEL` is
+   reused by default; `OPENAI_REVIEW_MODEL` remains an optional model override.
+   `--no-ai` conservatively excludes LLM-only measures. Bundle states are limited
+   to `draft -> approved/rejected -> active`.
+
+   After approval, stop the development server and run:
 
    ```bash
    npm run dataset:activate -- <name>
    ```
 
-   Activation moves the complete bundle under `data/active/` and removes the old
-   active bundle, avoiding a second copy of large databases. Existing installations
+   Activation requires an `approved` bundle, validates every fingerprint,
+   runs SQLite `quick_check`, then moves
+   the complete bundle under `data/active/`. Interrupted `active.next` and
+   `active.previous` swaps are recovered on the next activation before the bundle
+   transitions to `active`. The old active
+   bundle is removed, avoiding a second copy of large databases. Existing installations
    using `data/active.db`, `data/dataset.md`, and `data/semantic.json` remain supported.
    Remove old `ACTIVE_*` dataset overrides from `.env.local`, or point them at this bundle.
 
