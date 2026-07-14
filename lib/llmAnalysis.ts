@@ -1,4 +1,5 @@
 import type { Analysis, ChartSpec, ResultProfile, Row } from "./analyticsTypes";
+import { getDatasetGuide } from "./datasetGuide";
 import { completeChat, stageReasoningEffort, tokenBudget } from "./llmClient";
 import { parseLastJsonObject } from "./jsonOutput";
 import { atStage } from "./pipelineError";
@@ -325,6 +326,7 @@ export async function analyzeResult(
         content: JSON.stringify({
           question,
           sql,
+          semantics: getDatasetGuide(),
           profile: {
             rowCount: profile.rowCount,
             sampledRows: profile.sampleRows.length,
