@@ -1,14 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
 function getGuidePaths() {
   const configured = process.env.ACTIVE_DATASET_GUIDE_PATHS;
   if (!configured) {
-    const active = join(process.cwd(), "data", "active");
+    const configuredDatabase = process.env.ACTIVE_DATABASE_PATH;
+    const active = configuredDatabase
+      ? dirname(isAbsolute(configuredDatabase) ? configuredDatabase : resolve(process.cwd(), configuredDatabase))
+      : join(process.cwd(), "data", "active");
     if (existsSync(active)) {
       const runtime = join(active, "dataset.runtime.md");
       return [existsSync(runtime) ? runtime : join(active, "dataset.md"), join(active, "semantic.json")];
     }
+    if (configuredDatabase) return [];
     return [join(process.cwd(), "data", "dataset.md"), join(process.cwd(), "data", "semantic.json")];
   }
   return configured.split(delimiter).filter(Boolean).map((path) =>

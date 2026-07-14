@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { transitionBundleState, validateStagedBundle, writeDatasetBundle } from "../lib/datasetBundle";
 import { createDatasetDraft, validateApprovedSemantic } from "../lib/datasetDraft";
 import { buildColumnEvidence, DEFAULT_LLM_POLICY } from "../lib/datasetEvidence";
 import { profileDatabase, refreshDataset, stageDataset } from "../lib/datasetImport";
 import { validateMeasureDefinition } from "../lib/datasetMeasure";
+import { reviewDataset } from "../lib/datasetReview";
 import { activateDataset } from "../scripts/activate-dataset";
 
 const root = mkdtempSync(join(tmpdir(), "dataset-import-"));
@@ -29,6 +31,7 @@ writeFileSync(join(source, "dataset.json"), JSON.stringify({
 }));
 const apiKey = process.env.OPENAI_API_KEY;
 const model = process.env.OPENAI_MODEL;
+const reviewModel = process.env.OPENAI_REVIEW_MODEL;
 const fetch = globalThis.fetch;
 delete process.env.OPENAI_API_KEY;
 delete process.env.OPENAI_MODEL;
@@ -209,6 +212,10 @@ try {
   semantic.measures.total_amount = { ...totalAmount, validation };
   semantic.relationships = [semantic.relationship_candidates[0]];
   assert.doesNotThrow(() => validateApprovedSemantic(semantic, profile));
+  assert.throws(
+    () => validateApprovedSemantic({ ...semantic, dataset: "wrong-dataset" }, profile),
+    /dataset or dialect/,
+  );
   semantic.relationships = [{
     from: "orders.missing",
     to: "customers.customer_id",
@@ -216,24 +223,110 @@ try {
   }];
   assert.throws(() => validateApprovedSemantic(semantic, profile), /valid table\.column/);
   semantic.relationships = [];
-  writeFileSync(join(directory, "dataset.md"), draft.markdown);
-  writeFileSync(join(directory, "dataset.runtime.md"), draft.runtimeMarkdown);
+  const reviewDraft = JSON.parse(draft.semanticJson);
+  reviewDraft.measure_candidates = [{
+    ...totalAmount,
+    status: "needs_review",
+    provenance: { source: "llm_inference", evidence: ["orders.amount"] },
+    validation,
+  }];
+  writeDatasetBundle(directory, {
+    "dataset-profile.json": `${JSON.stringify(refreshed.profile, null, 2)}\n`,
+    "dataset-catalog.json": draft.catalogJson,
+    "dataset.md": draft.markdown,
+    "dataset.runtime.md": draft.runtimeMarkdown,
+    "semantic.json": `${JSON.stringify(reviewDraft, null, 2)}\n`,
+  }, {
+    dataset: profile.dataset,
+    sourcePath: source,
+    generatedBy: draft.generatedBy,
+  });
+  assert.ok(existsSync(join(directory, "bundle-manifest.json")));
+  assert.equal(validateStagedBundle(directory, "sales-prod").manifest.state, "draft");
+  assert.throws(() => transitionBundleState(directory, "draft", "active"), /Invalid bundle state transition/);
+
+  const tamperedDb = new DatabaseSync(stagedDatabase);
+  tamperedDb.exec("CREATE TABLE bundle_tamper (value TEXT)");
+  tamperedDb.close();
+  assert.throws(() => activateDataset("sales-prod", data), /database\.sqlite no longer matches/);
+  const restoredDb = new DatabaseSync(stagedDatabase);
+  restoredDb.exec("DROP TABLE bundle_tamper");
+  restoredDb.close();
+  writeDatasetBundle(directory, {
+    "dataset-profile.json": `${JSON.stringify(refreshed.profile, null, 2)}\n`,
+    "dataset-catalog.json": draft.catalogJson,
+    "dataset.md": draft.markdown,
+    "dataset.runtime.md": draft.runtimeMarkdown,
+    "semantic.json": `${JSON.stringify(reviewDraft, null, 2)}\n`,
+  }, {
+    dataset: profile.dataset,
+    sourcePath: source,
+    generatedBy: draft.generatedBy,
+  });
+
+  writeFileSync(join(directory, "dataset-catalog.json"), `${draft.catalogJson}\n`);
+  assert.throws(() => activateDataset("sales-prod", data), /dataset-catalog\.json no longer matches/);
   writeFileSync(join(directory, "dataset-catalog.json"), draft.catalogJson);
-  writeFileSync(join(directory, "semantic.json"), JSON.stringify(semantic));
-  mkdirSync(join(data, "active"), { recursive: true });
-  writeFileSync(join(data, "active", "old.txt"), "old");
+  process.env.OPENAI_API_KEY = "test";
+  process.env.OPENAI_REVIEW_MODEL = "review-test";
+  globalThis.fetch = async (_input, init) => {
+    const body = String(init?.body);
+    assert.match(body, /SUM\(orders\.amount\)/);
+    assert.doesNotMatch(body, /total_amount|Sum of recorded order amounts|selected dimensions/);
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reviews: [{
+      id: "m1",
+      decision: "approve",
+      evidence_ids: ["expression:m1", "column:orders.amount"],
+    }] }) } }] }));
+  };
+  const report = await reviewDataset(directory, "sales-prod");
+  assert.equal(report.decision, "approved");
+  assert.equal(report.relationships.filter(({ decision }) => decision === "approved").length, 1);
+  assert.equal(report.measures.filter(({ decision }) => decision === "approved").length, 1);
+  const reviewedSemantic = readFileSync(join(directory, "semantic.json"), "utf8");
+  const reviewedReport = readFileSync(join(directory, "review-report.json"), "utf8");
+  assert.equal(JSON.parse(reviewedSemantic).status, "approved");
+  assert.equal(JSON.parse(reviewedSemantic).measures.orders_amount_sum.description, "Sum of recorded values in orders.amount.");
+  assert.equal(JSON.parse(reviewedSemantic).measures.orders_amount_sum.grain, "Selected dimensions over database rows in orders.");
+  assert.equal(validateStagedBundle(directory, "sales-prod").manifest.review?.model, "review-test");
+  writeFileSync(join(directory, "semantic.json"), `${reviewedSemantic}\n`);
+  assert.throws(() => activateDataset("sales-prod", data), /semantic\.json no longer matches/);
+  writeFileSync(join(directory, "semantic.json"), reviewedSemantic);
+  writeFileSync(join(directory, "review-report.json"), `${reviewedReport}\n`);
+  assert.throws(() => activateDataset("sales-prod", data), /review-report\.json no longer matches/);
+  writeFileSync(join(directory, "review-report.json"), reviewedReport);
+
+  const interrupted = join(data, "active.next");
+  const previous = join(data, "active.previous");
+  mkdirSync(previous, { recursive: true });
+  writeFileSync(join(previous, "old.txt"), "old");
+  renameSync(directory, interrupted);
   activateDataset("sales-prod", data);
   assert.ok(existsSync(join(data, "active", "database.sqlite")));
+  assert.ok(existsSync(join(data, "active", "bundle-manifest.json")));
   assert.ok(!existsSync(join(data, "active", "old.txt")));
   assert.ok(!existsSync(join(data, "active.previous")));
+  assert.ok(!existsSync(join(data, "active.next")));
   assert.ok(!existsSync(directory));
+  const sealedManifest = JSON.parse(readFileSync(join(data, "active", "bundle-manifest.json"), "utf8"));
+  assert.equal(sealedManifest.state, "active");
+  assert.equal(typeof sealedManifest.sealed_at, "string");
+  assert.throws(() => transitionBundleState(join(data, "active"), "active", "draft"), /Invalid bundle state transition/);
+  mkdirSync(join(data, "active.previous"));
+  writeFileSync(join(data, "active.previous", "old.txt"), "old");
+  activateDataset("sales-prod", data);
+  assert.ok(!existsSync(join(data, "active.previous")));
   const activeDb = new DatabaseSync(join(data, "active", "database.sqlite"), { readOnly: true });
   const sourceFiles = activeDb.prepare("SELECT source_file FROM orders ORDER BY order_id").all() as Array<{ source_file: string }>;
   activeDb.close();
   assert.deepEqual(sourceFiles.map(({ source_file }) => source_file), ["orders/january.tsv", "orders/february.tsv"]);
 } finally {
   if (apiKey) process.env.OPENAI_API_KEY = apiKey;
+  else delete process.env.OPENAI_API_KEY;
   if (model) process.env.OPENAI_MODEL = model;
+  else delete process.env.OPENAI_MODEL;
+  if (reviewModel) process.env.OPENAI_REVIEW_MODEL = reviewModel;
+  else delete process.env.OPENAI_REVIEW_MODEL;
   globalThis.fetch = fetch;
   rmSync(root, { recursive: true, force: true });
 }

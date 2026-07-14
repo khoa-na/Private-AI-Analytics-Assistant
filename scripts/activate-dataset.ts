@@ -5,37 +5,64 @@ import {
   rmSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { quickCheckDatabase, transitionBundleState, validateStagedBundle } from "../lib/datasetBundle";
 import { validateApprovedSemantic } from "../lib/datasetDraft";
-import { datasetSlug, profileDatabase } from "../lib/datasetImport";
+import { datasetSlug } from "../lib/datasetImport";
+
+export function recoverActivation(source: string, next: string, active: string, previous: string) {
+  const completed = existsSync(active) && !existsSync(next) && !existsSync(source);
+  if (completed) return true;
+  if (!existsSync(active) && existsSync(previous)) renameSync(previous, active);
+  if (existsSync(next)) {
+    if (existsSync(source)) {
+      throw new Error(`Both staged and temporary activation bundles exist; inspect ${source} and ${next}.`);
+    }
+    renameSync(next, source);
+  }
+  if (existsSync(active) && existsSync(previous)) rmSync(previous, { recursive: true, force: true });
+  return false;
+}
 
 export function activateDataset(requested: string, data = resolve("data")) {
   const name = datasetSlug(requested);
   const source = join(data, "staging", name);
   const database = join(source, "database.sqlite");
-  const markdown = join(source, "dataset.md");
   const runtimeMarkdown = join(source, "dataset.runtime.md");
-  const catalog = join(source, "dataset-catalog.json");
   const semanticPath = join(source, "semantic.json");
   const next = join(data, "active.next");
   const active = join(data, "active");
   const previous = join(data, "active.previous");
 
-  for (const path of [database, markdown, runtimeMarkdown, catalog, semanticPath]) {
-    if (!existsSync(path)) throw new Error(`Missing staged artifact: ${path}`);
+  if (recoverActivation(source, next, active, previous)) {
+    const { manifest } = validateStagedBundle(active, name);
+    if (manifest.state === "approved") transitionBundleState(active, "approved", "active");
+    else if (manifest.state !== "active") {
+      throw new Error(`Cannot recover activation from bundle state ${manifest.state}.`);
+    }
+    rmSync(previous, { recursive: true, force: true });
+    console.log(`Recovered completed activation: ${name}`);
+    return;
   }
-  const profile = profileDatabase(database, name);
-  validateApprovedSemantic(JSON.parse(readFileSync(semanticPath, "utf8")), profile);
+  const { manifest, profile } = validateStagedBundle(source, name);
+  if (manifest.state !== "approved") {
+    throw new Error(`Dataset must be approved before activation; current bundle state is ${manifest.state}.`);
+  }
+  const semantic = JSON.parse(readFileSync(semanticPath, "utf8")) as Record<string, unknown>;
+  if (semantic.schema_version !== 1) throw new Error("Activation requires semantic.json schema_version 1.");
+  validateApprovedSemantic(semantic, profile);
   if (Buffer.byteLength(`${readFileSync(runtimeMarkdown, "utf8")}\n${readFileSync(semanticPath, "utf8")}`) > 12_000) {
     throw new Error("Dataset guide is larger than the 12 KB runtime limit.");
   }
-  if (existsSync(next)) throw new Error(`Temporary activation path already exists: ${next}`);
+  quickCheckDatabase(database);
 
   renameSync(source, next);
   try {
     rmSync(previous, { recursive: true, force: true });
     if (existsSync(active)) renameSync(active, previous);
     renameSync(next, active);
+    transitionBundleState(active, "approved", "active");
   } catch (error) {
+    if (!existsSync(next) && !existsSync(source) && existsSync(active)) renameSync(active, source);
     if (existsSync(previous) && !existsSync(active)) renameSync(previous, active);
     if (existsSync(next) && !existsSync(source)) renameSync(next, source);
     throw error;

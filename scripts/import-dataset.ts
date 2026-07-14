@@ -1,5 +1,5 @@
-import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { writeDatasetBundle } from "../lib/datasetBundle";
 import { createDatasetDraft } from "../lib/datasetDraft";
 import { refreshDataset, stageDataset } from "../lib/datasetImport";
 
@@ -23,11 +23,18 @@ try {
     delete process.env.OPENAI_MODEL;
   }
   const draft = await createDatasetDraft(profile);
-  writeFileSync(join(directory, "dataset-profile.json"), `${JSON.stringify(profile, null, 2)}\n`);
-  writeFileSync(join(directory, "dataset-catalog.json"), draft.catalogJson);
-  writeFileSync(join(directory, "dataset.md"), draft.markdown);
-  writeFileSync(join(directory, "dataset.runtime.md"), draft.runtimeMarkdown);
-  writeFileSync(join(directory, "semantic.json"), draft.semanticJson);
+  writeDatasetBundle(directory, {
+    "dataset-profile.json": `${JSON.stringify(profile, null, 2)}\n`,
+    "dataset-catalog.json": draft.catalogJson,
+    "dataset.md": draft.markdown,
+    "dataset.runtime.md": draft.runtimeMarkdown,
+    "semantic.json": draft.semanticJson,
+  }, {
+    dataset: profile.dataset,
+    sourcePath: source,
+    generatedBy: draft.generatedBy,
+    ...(draft.generatedBy === "ai" && process.env.OPENAI_MODEL ? { model: process.env.OPENAI_MODEL } : {}),
+  });
   console.log(`Staged dataset: ${profile.dataset}`);
   console.log(`Tables: ${profile.tables.length}`);
   console.log(`Rows: ${profile.tables.reduce((total, table) => total + table.rowCount, 0)}`);
