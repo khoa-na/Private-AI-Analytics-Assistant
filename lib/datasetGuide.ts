@@ -4,6 +4,11 @@ import { delimiter, isAbsolute, join, resolve } from "node:path";
 function getGuidePaths() {
   const configured = process.env.ACTIVE_DATASET_GUIDE_PATHS;
   if (!configured) {
+    const active = join(process.cwd(), "data", "active");
+    if (existsSync(active)) {
+      const runtime = join(active, "dataset.runtime.md");
+      return [existsSync(runtime) ? runtime : join(active, "dataset.md"), join(active, "semantic.json")];
+    }
     return [join(process.cwd(), "data", "dataset.md"), join(process.cwd(), "data", "semantic.json")];
   }
   return configured.split(delimiter).filter(Boolean).map((path) =>
@@ -14,7 +19,21 @@ function getGuidePaths() {
 export function getDatasetGuide() {
   const guide = getGuidePaths()
     .filter(existsSync)
-    .map((path) => readFileSync(path, "utf8").trim())
+    .map((path) => {
+      const text = readFileSync(path, "utf8").trim();
+      if (!path.toLowerCase().endsWith(".json")) return text;
+      try {
+        const value = JSON.parse(text) as Record<string, unknown>;
+        if (value.schema_version !== 1) return text;
+        const { relationship_candidates, measure_candidates, generation_error, ...confirmed } = value;
+        void relationship_candidates;
+        void measure_candidates;
+        void generation_error;
+        return JSON.stringify(confirmed);
+      } catch {
+        return text;
+      }
+    })
     .filter(Boolean)
     .join("\n\n");
   if (Buffer.byteLength(guide) > 12_000) {

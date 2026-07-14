@@ -6,6 +6,7 @@ docs/*
 
 # Local datasets
 data/
+data_new/
 
 # Node / Next.js
 node_modules/

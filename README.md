@@ -28,8 +28,62 @@ visualizes grounded results.
    npm install
    ```
 
-2. Install one SQLite database as `data/active.db`. Optional dataset-specific
-   context can be added as `data/dataset.md` and `data/semantic.json`.
+2. Import a SQLite file or a directory of CSV/TSV files:
+
+   ```bash
+   npm run dataset:import -- /path/to/database.sqlite
+   npm run dataset:import -- /path/to/csv-directory --name=sales
+   npm run dataset:import -- /path/to/private-data --no-ai
+   ```
+
+   Files are separate tables by default. To union files or declare keys, add
+   `dataset.json` inside the source directory:
+
+   ```json
+   {
+     "name": "flights",
+     "llmPolicy": {
+       "sendExamples": true,
+       "sendFreeTextExamples": false,
+       "maskIdentifiers": true,
+       "maxExampleLength": 80
+     },
+     "tables": [{
+       "name": "flights",
+       "format": "csv",
+       "sources": ["*.csv"],
+       "sourceColumn": "source_file",
+       "indexes": [["flight_date"], ["carrier", "flight_date"]]
+     }]
+   }
+   ```
+
+   After changing indexes or AI configuration, refresh metadata without
+   importing the raw files again:
+
+   ```bash
+   npm run dataset:import -- /path/to/dataset-directory --refresh
+   ```
+
+   The command stages `database.sqlite`, a privacy-filtered `dataset-profile.json`,
+   full `dataset-catalog.json` and `dataset.md`, compact `dataset.runtime.md`,
+   and `semantic.json` under `data/staging/<name>`. When an LLM is configured it
+   enriches the draft; otherwise the guide is generated deterministically.
+   The versioned semantic draft records provenance and validation for every
+   entity, relationship candidate, and measure candidate. Review the draft,
+   move confirmed relationship objects into `relationships`, move confirmed
+   measure objects into `measures` keyed by measure name, preserve their
+   provenance and validation fields,
+   set `semantic.json` status to `approved`, stop the development server, then run:
+
+   ```bash
+   npm run dataset:activate -- <name>
+   ```
+
+   Activation moves the complete bundle under `data/active/` and removes the old
+   active bundle, avoiding a second copy of large databases. Existing installations
+   using `data/active.db`, `data/dataset.md`, and `data/semantic.json` remain supported.
+   Remove old `ACTIVE_*` dataset overrides from `.env.local`, or point them at this bundle.
 
    The database can also live elsewhere:
 
@@ -37,7 +91,7 @@ visualizes grounded results.
    ACTIVE_DATABASE_PATH=/path/to/database.sqlite
    ```
 
-   For the included Olist CSV importer, put the CSV files in `data/` and run:
+   For the legacy Olist-specific importer, put the CSV files in `data/` and run:
 
    ```bash
    npm run build-db

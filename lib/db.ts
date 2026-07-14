@@ -2,18 +2,24 @@ import { constants, DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
-const activePath = process.env.ACTIVE_DATABASE_PATH ?? join("data", "active.db");
+const activePath = process.env.ACTIVE_DATABASE_PATH ?? join("data", "active", "database.sqlite");
 export const dbPath = isAbsolute(activePath)
   ? activePath
   : resolve(process.cwd(), activePath);
 
-const legacyDbPath = join(process.cwd(), "data", "olist.sqlite");
+const legacyDbPaths = [
+  join(process.cwd(), "data", "active.db"),
+  join(process.cwd(), "data", "olist.sqlite"),
+];
 
 export function getDatabasePath() {
   if (existsSync(dbPath)) return dbPath;
-  // ponytail: legacy fallback keeps existing installs running; remove after active.db migration.
-  if (!process.env.ACTIVE_DATABASE_PATH && existsSync(legacyDbPath)) return legacyDbPath;
-  throw new Error("Active database not found. Install data/active.db or set ACTIVE_DATABASE_PATH.");
+  // ponytail: legacy fallbacks keep existing installs running; remove after active bundle migration.
+  if (!process.env.ACTIVE_DATABASE_PATH) {
+    const legacy = legacyDbPaths.find(existsSync);
+    if (legacy) return legacy;
+  }
+  throw new Error("Active database not found. Activate a staged dataset or set ACTIVE_DATABASE_PATH.");
 }
 
 export function getDb() {
