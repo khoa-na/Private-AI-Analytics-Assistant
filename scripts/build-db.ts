@@ -5,7 +5,9 @@ import { parse } from "csv-parse";
 
 const root = process.cwd();
 const dataDir = join(root, "data");
-const dbPath = join(dataDir, "active.db");
+const olistDir = join(dataDir, "olist");
+const csvDir = join(olistDir, "raw");
+const dbPath = join(olistDir, "database.sqlite");
 
 const tables: Record<string, string> = {
   "olist_customers_dataset.csv": "customers",
@@ -35,8 +37,8 @@ function quoteIdentifier(value: string) {
 }
 
 async function loadCsv(db: DatabaseSync, fileName: string, tableName: string) {
-  const csvPath = join(dataDir, fileName);
-  if (!existsSync(csvPath)) throw new Error(`Missing data/${fileName}`);
+  const csvPath = join(csvDir, fileName);
+  if (!existsSync(csvPath)) throw new Error(`Missing data/olist/raw/${fileName}`);
 
   const stream = createReadStream(csvPath).pipe(
     parse({ bom: true, columns: true, skip_empty_lines: true }),
@@ -78,7 +80,7 @@ async function loadCsv(db: DatabaseSync, fileName: string, tableName: string) {
 }
 
 async function main() {
-  mkdirSync(dataDir, { recursive: true });
+  mkdirSync(olistDir, { recursive: true });
   if (existsSync(dbPath)) rmSync(dbPath);
 
   const db = new DatabaseSync(dbPath);

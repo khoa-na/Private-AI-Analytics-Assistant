@@ -111,11 +111,14 @@ visualizes grounded results.
    ACTIVE_DATABASE_PATH=/path/to/database.sqlite
    ```
 
-   For the legacy Olist-specific importer, put the CSV files in `data/` and run:
+   For the legacy Olist-specific importer, put the CSV files in
+   `data/olist/raw/` and run:
 
    ```bash
    npm run build-db
    ```
+
+   This creates `data/olist/database.sqlite` without changing the active dataset.
 
 3. Add local environment variables:
 

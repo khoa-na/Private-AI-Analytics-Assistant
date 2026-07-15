@@ -8,6 +8,7 @@ export const dbPath = isAbsolute(activePath)
   : resolve(process.cwd(), activePath);
 
 const legacyDbPaths = [
+  join(process.cwd(), "data", "olist", "database.sqlite"),
   join(process.cwd(), "data", "active.db"),
   join(process.cwd(), "data", "olist.sqlite"),
 ];
