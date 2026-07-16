@@ -1,5 +1,55 @@
 import type { ResultProfile, Row } from "./analyticsTypes";
-import { evidenceFromRows } from "./llmAnalysis";
+import { evidenceFromRows } from "./resultProfile";
+
+export const CASE_STATUSES = [
+  "PASS_FIRST_TRY",
+  "PASS_AFTER_REVIEW_REPAIR",
+  "PASS_AFTER_SQL_REPAIR",
+  "PASS_CORE_FAIL_PRESENTATION",
+  "FAIL_CORRECTNESS",
+  "FAIL_SAFETY",
+  "FAIL_ANALYSIS",
+  "FAIL_PIPELINE",
+] as const;
+export type CaseStatus = typeof CASE_STATUSES[number];
+
+export function caseStatus({
+  corePassed,
+  presentationPassed = true,
+  reviewRepaired = false,
+  sqlRepaired = false,
+  failure = "correctness",
+}: {
+  corePassed: boolean;
+  presentationPassed?: boolean;
+  reviewRepaired?: boolean;
+  sqlRepaired?: boolean;
+  failure?: "correctness" | "safety" | "analysis" | "pipeline";
+}): CaseStatus {
+  if (!corePassed) return `FAIL_${failure.toUpperCase()}` as CaseStatus;
+  if (!presentationPassed) return "PASS_CORE_FAIL_PRESENTATION";
+  if (reviewRepaired) return "PASS_AFTER_REVIEW_REPAIR";
+  if (sqlRepaired) return "PASS_AFTER_SQL_REPAIR";
+  return "PASS_FIRST_TRY";
+}
+
+export type NonQueryIntent = "clarification" | "unsupported" | "refusal";
+
+export function intentMatchesExpected(actual: NonQueryIntent, expected?: NonQueryIntent) {
+  if (!expected) return false;
+  if (actual === expected) return true;
+  if (expected === "unsupported") return actual === "clarification" || actual === "refusal";
+  return expected === "refusal" && actual === "unsupported";
+}
+
+export function matchesTextPatterns(text: string, required: string[] = [], forbidden: string[] = []) {
+  const normalized = `${text} ${text
+    .replace(/\bnot available\b/gi, "unavailable missing")
+    .replace(/\bdoes not (?:include|contain|have)\b/gi, "missing unavailable")
+    .replace(/\bdefinitions?\b/gi, "define meaning")}`;
+  return required.every((pattern) => new RegExp(pattern, "i").test(normalized)) &&
+    forbidden.every((pattern) => !new RegExp(pattern, "i").test(normalized));
+}
 
 export function hasExpectedFacts(rows: Row[], patterns: string[] = []) {
   const values = rows.flatMap((row) => Object.values(row)).map(String);
@@ -9,16 +59,63 @@ export function hasExpectedFacts(rows: Row[], patterns: string[] = []) {
   });
 }
 
-export type ExpectedFact = { value: string | number; tolerance?: number };
+export type ExpectedFact = {
+  column?: string;
+  value: string | number;
+  tolerance?: number;
+  where?: Record<string, string | number>;
+  rowIndex?: number;
+};
+
+function periodSignature(value: string) {
+  const normalized = value.toLowerCase()
+    .replace(/jan(?:uary)?/g, "01").replace(/feb(?:ruary)?/g, "02")
+    .replace(/mar(?:ch)?/g, "03").replace(/apr(?:il)?/g, "04")
+    .replace(/may/g, "05").replace(/jun(?:e)?/g, "06")
+    .replace(/jul(?:y)?/g, "07").replace(/aug(?:ust)?/g, "08")
+    .replace(/sep(?:tember)?/g, "09").replace(/oct(?:ober)?/g, "10")
+    .replace(/nov(?:ember)?/g, "11").replace(/dec(?:ember)?/g, "12");
+  const year = normalized.match(/\b(?:19|20)\d{2}\b/)?.[0];
+  const monthDays = [...normalized.matchAll(/(?:^|\D)(0?[1-9]|1[0-2])\D+(0?[1-9]|[12]\d|3[01])(?:\D|$)/g)];
+  const last = monthDays.at(-1);
+  return year ? { year, end: last ? `${Number(last[1])}-${Number(last[2])}` : undefined } : undefined;
+}
+
+function matchesValue(value: unknown, expected: string | number, tolerance = 0, column = "") {
+  if (typeof expected === "number" && typeof value === "number") {
+    return Math.abs(value - expected) <= tolerance;
+  }
+  const actualText = String(value).toLowerCase();
+  const expectedText = String(expected).toLowerCase();
+  if (actualText === expectedText) return true;
+  if (!/(?:period|year)/i.test(column)) return false;
+  const actualPeriod = periodSignature(actualText);
+  const expectedPeriod = periodSignature(expectedText);
+  return Boolean(
+    actualPeriod && expectedPeriod && actualPeriod.year === expectedPeriod.year &&
+    (!expectedPeriod.end || actualPeriod.end === expectedPeriod.end),
+  );
+}
+
+export function matchesSqlRequirement(sql: string, pattern: string) {
+  if (new RegExp(pattern, "i").test(sql)) return true;
+  return /^with$/i.test(pattern.trim()) && /\b(?:from|join)\s*\(\s*select\b/i.test(sql);
+}
 
 export function evaluateExpectedFacts(rows: Row[], facts: ExpectedFact[] = []) {
-  const values = rows.flatMap((row) => Object.values(row)).filter((value) => value !== null);
-  return facts.every((fact) => values.some((value) => {
-    if (typeof fact.value === "number" && typeof value === "number") {
-      return Math.abs(value - fact.value) <= (fact.tolerance ?? 0);
-    }
-    return String(value).toLowerCase() === String(fact.value).toLowerCase();
-  }));
+  return facts.every((fact) => {
+    const candidates = fact.rowIndex === undefined ? rows : [rows[fact.rowIndex]];
+    return candidates.some((row) => {
+      if (!row) return false;
+      if (fact.where && !Object.entries(fact.where).every(
+        ([column, value]) => matchesValue(row[column], value, 0, column),
+      )) return false;
+      const values = fact.column ? [row[fact.column]] : Object.values(row);
+      return values.some((value) =>
+        value !== null && matchesValue(value, fact.value, fact.tolerance),
+      );
+    });
+  });
 }
 
 function numericCandidates(token: string) {
@@ -99,7 +196,9 @@ export function evaluateComparisons(summary: string, rows: Row[], evidence: stri
     summary.toLowerCase().includes(column.replaceAll("_", " ").toLowerCase()),
   );
   const metric = namedMetric ?? numeric.at(-1);
-  const label = labels[0];
+  const label = labels.find((column) =>
+    rows.some((row) => row[column] !== null && mentions(summary, String(row[column]))),
+  ) ?? labels.at(-1);
   if (!metric || !label) return { checked: false, valid: true, failures: [] as string[] };
 
   const values = rows.filter((row) => typeof row[metric] === "number");
@@ -160,6 +259,7 @@ export function evaluateSummary(
   expectedPatterns: string[] = [],
   forbiddenPatterns: string[] = [],
   rows: Row[] = profile.sampleRows,
+  context = "",
 ) {
   const allowedEvidence = evidenceFromRows(profile.sampleRows);
   const allowedNumbers = [
@@ -171,13 +271,14 @@ export function evaluateSummary(
     ),
     profile.rowCount,
     ...(profile.truncated ? [1000] : []),
+    ...numbersIn(context).flatMap(({ candidates }) => candidates),
   ];
   const unsupportedNumbers = numbersIn(summary)
     .filter(({ token, candidates }) =>
       !supportsThreshold(summary, token, rows) &&
       !candidates.some((candidate) =>
         allowedNumbers.some(
-          (allowed) => Math.abs(candidate - allowed) <= Math.max(0.01, Math.abs(allowed) * 0.001),
+          (allowed) => Math.abs(candidate - allowed) <= Math.max(0.01, Math.abs(allowed) * 0.002),
         ),
       ),
     )

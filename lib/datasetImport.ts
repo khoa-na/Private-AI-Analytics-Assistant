@@ -348,6 +348,7 @@ async function buildDelimitedDatabase(source: string, destination: string, manif
       await importTable(db, source, table, paths);
     }
     applyIndexes(db, tables);
+    db.exec("ANALYZE");
   } finally {
     db.close();
   }

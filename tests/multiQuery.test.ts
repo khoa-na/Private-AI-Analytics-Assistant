@@ -1,19 +1,29 @@
 import assert from "node:assert/strict";
 import { runMultiQueryPlan } from "../lib/multiQuery";
 
+const brief = {
+  objective: "Compare delivery and reviews",
+  metric: "rate or score",
+  grain: "one scalar row per step",
+  dimensions: [],
+  outputColumns: ["value"],
+  filters: [],
+};
+
 const questions: string[] = [];
 const output = await runMultiQueryPlan(
   "Compare delivery and reviews",
   {
     intent: "multi_query",
+    brief,
     steps: [
-      { kind: "query", purpose: "Delivery", question: "Late rate by state", requiredGrain: "state", filters: [] },
-      { kind: "query", purpose: "Reviews", question: "Review score by state", requiredGrain: "state", filters: [] },
+      { kind: "query", purpose: "Delivery", question: "Late rate by state", brief: { ...brief, outputColumns: ["late_rate"] }, sql: "SELECT late_rate" },
+      { kind: "query", purpose: "Reviews", question: "Review score by state", brief: { ...brief, outputColumns: ["review_score"] }, sql: "SELECT review_score" },
     ],
   },
-  async (question) => {
-    questions.push(question);
-    const delivery = question.startsWith("Late");
+  async (step) => {
+    questions.push(step.question);
+    const delivery = step.question.startsWith("Late");
     return {
       intent: "query" as const,
       result: {
@@ -22,6 +32,8 @@ const output = await runMultiQueryPlan(
         rows: [{ [delivery ? "late_rate" : "review_score"]: delivery ? 12 : 3.8 }],
         truncated: false,
       },
+      brief: step.brief,
+      quality: { issues: [], caveats: [] },
       sqlGenerationMs: 1,
       queryMs: 2,
     };
@@ -29,10 +41,15 @@ const output = await runMultiQueryPlan(
   async (_question, sql, profile, useDeterministic) => {
     assert.match(sql, /Delivery/);
     assert.equal(useDeterministic, false);
-    assert.deepEqual(profile.sampleRows[0], {
-      "step_1.row_1.late_rate": 12,
-      "step_2.row_1.review_score": 3.8,
-    });
+    assert.deepEqual(profile.sampleRows, [
+      { analysis_step: "1: Delivery", row_number: 1, late_rate: 12 },
+      { analysis_step: "2: Reviews", row_number: 1, review_score: 3.8 },
+    ]);
+    assert.deepEqual(
+      profile.columns.filter(({ name }) => ["late_rate", "review_score"].includes(name))
+        .map(({ name, nullCount }) => ({ name, nullCount })),
+      [{ name: "late_rate", nullCount: 0 }, { name: "review_score", nullCount: 0 }],
+    );
     return {
       analysis: {
         summary: "Compared.",
@@ -47,8 +64,8 @@ const output = await runMultiQueryPlan(
 );
 
 assert.deepEqual(questions, [
-  "Late rate by state\nRequired result grain: state.\nRequired filters: none.",
-  "Review score by state\nRequired result grain: state.\nRequired filters: none.",
+  "Late rate by state",
+  "Review score by state",
 ]);
 assert.equal(output.steps.length, 2);
 assert.equal(output.timings.sqlGenerationMs, 2);

@@ -19,6 +19,8 @@ export async function POST(request: Request) {
         question,
         intent: "query",
         mode: "multi_query",
+        brief: generated.brief,
+        review: generated.review,
         steps: multi.steps,
         analysis: multi.analysis,
         chart: multi.chart,
@@ -29,12 +31,12 @@ export async function POST(request: Request) {
     if (generated.intent !== "query") {
       return NextResponse.json({ question, ...generated });
     }
-    const { result, sqlGenerationMs, queryMs } = generated;
+    const { result, brief, review, sqlAttempts, quality, sqlGenerationMs, queryMs } = generated;
     const queried = Date.now();
     const profile = profileResult(result.rows, 50, result.truncated);
     let analyzed;
     try {
-      analyzed = await analyzeResult(question, result.sql, profile);
+      analyzed = await analyzeResult(question, result.sql, profile, true, brief, quality.caveats);
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Analysis failed.";
       analyzed = {
@@ -54,6 +56,10 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       question,
+      brief,
+      review,
+      sqlAttempts,
+      quality,
       result: {
         sql: result.sql,
         columns: result.columns,

@@ -154,7 +154,7 @@ export function writeDatasetBundle(
   return manifest;
 }
 
-function readManifest(directory: string): BundleManifest {
+export function readBundleManifest(directory: string): BundleManifest {
   const path = join(directory, BUNDLE_MANIFEST_NAME);
   if (!existsSync(path)) throw new Error(`Missing staged artifact: ${path}. Re-run dataset import or refresh.`);
   const value: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -181,7 +181,7 @@ function sameFingerprint(
 }
 
 export function validateStagedBundle(directory: string, expectedDataset: string) {
-  const manifest = readManifest(directory);
+  const manifest = readBundleManifest(directory);
   if (manifest.dataset !== expectedDataset) {
     throw new Error(`Bundle dataset mismatch: expected ${expectedDataset}, found ${manifest.dataset}.`);
   }
@@ -234,7 +234,7 @@ export function transitionBundleState(
   next: BundleState,
   review?: { reviewer: "ai" | "deterministic"; model?: string; reviewedAt?: string },
 ) {
-  const manifest = readManifest(directory);
+  const manifest = readBundleManifest(directory);
   if (manifest.state !== expected) {
     throw new Error(`Bundle state mismatch: expected ${expected}, found ${manifest.state}.`);
   }

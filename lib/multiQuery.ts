@@ -5,10 +5,21 @@ import { generateGeneralSql } from "./llmSql";
 import type { MultiQueryPlan } from "./queryPlan";
 import { profileResult } from "./resultProfile";
 
+type PlannedStep = MultiQueryPlan["steps"][number];
+
+function runPlannedStep(step: PlannedStep) {
+  return generateAndRunQuery(
+    step.question,
+    async (_question, correction) => correction
+      ? generateGeneralSql(step.question, correction)
+      : { intent: "query", brief: step.brief, sql: step.sql },
+  );
+}
+
 export async function runMultiQueryPlan(
   question: string,
   plan: MultiQueryPlan,
-  runStep = (stepQuestion: string) => generateAndRunQuery(stepQuestion, generateGeneralSql),
+  runStep: (step: PlannedStep) => ReturnType<typeof runPlannedStep> = runPlannedStep,
   analyze = analyzeResult,
 ): Promise<{
   steps: AnalysisStep[];
@@ -22,36 +33,40 @@ export async function runMultiQueryPlan(
   let queryMs = 0;
 
   for (const step of plan.steps) {
-    const generated = await runStep([
-      step.question,
-      `Required result grain: ${step.requiredGrain}.`,
-      `Required filters: ${step.filters.length ? step.filters.join("; ") : "none"}.`,
-    ].join("\n"));
+    const generated = await runStep(step);
     sqlGenerationMs += generated.sqlGenerationMs;
     queryMs += generated.queryMs;
     if (generated.intent !== "query") {
       throw new Error(`Analysis step could not produce one query: ${step.purpose}`);
     }
-    steps.push({ ...step, result: generated.result });
+    steps.push({
+      ...step,
+      ...(generated.sqlAttempts?.length ? { sqlAttempts: generated.sqlAttempts } : {}),
+      quality: generated.quality,
+      result: generated.result,
+    });
   }
 
-  const ledger: Row = {};
+  const evidenceRows: Row[] = [];
   for (const [stepIndex, step] of steps.entries()) {
-    // ponytail: ten rows per step bounds prompt size; add result summarization if complex evals need more coverage.
-    for (const [rowIndex, row] of step.result.rows.slice(0, 10).entries()) {
-      for (const [column, value] of Object.entries(row)) {
-        ledger[`step_${stepIndex + 1}.row_${rowIndex + 1}.${column}`] = value;
-      }
+    for (const [rowIndex, row] of step.result.rows.entries()) {
+      evidenceRows.push({
+        analysis_step: `${stepIndex + 1}: ${step.purpose}`,
+        row_number: rowIndex + 1,
+        ...row,
+      });
     }
   }
-  if (!Object.keys(ledger).length) throw new Error("The analysis steps returned no evidence.");
+  if (!evidenceRows.length) throw new Error("The analysis steps returned no evidence.");
 
   const started = Date.now();
   const analyzed = await analyze(
     question,
     steps.map((step) => `-- ${step.purpose}\n${step.result.sql}`).join("\n\n"),
-    profileResult([ledger], 1, steps.some((step) => step.result.truncated)),
+    profileResult(evidenceRows, 50, steps.some((step) => step.result.truncated)),
     false,
+    plan.brief,
+    steps.flatMap((step) => step.quality.caveats),
   );
 
   return {

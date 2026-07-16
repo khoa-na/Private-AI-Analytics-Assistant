@@ -3,6 +3,11 @@ import { getDatasetGuide } from "./datasetGuide";
 import { completeChat, stageReasoningEffort, tokenBudget } from "./llmClient";
 import { parseLastJsonObject } from "./jsonOutput";
 import { atStage } from "./pipelineError";
+import type { AnalysisBrief } from "./queryPlan";
+import { evidenceFromRows } from "./resultProfile";
+import { evaluateSummary } from "./summaryEvaluation";
+
+export { evidenceFromRows } from "./resultProfile";
 
 type AnalysisResult = {
   analysis: Analysis;
@@ -12,14 +17,6 @@ type AnalysisResult = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function evidenceFromRows(rows: Row[]) {
-  return new Set(
-    rows.flatMap((row) =>
-      Object.entries(row).map(([column, value]) => `${column} = ${String(value)}`),
-    ),
-  );
 }
 
 export function parseAnalysis(
@@ -115,32 +112,37 @@ export async function parseAnalysisWithOneRetry(
   allowedEvidence: Set<string>,
   numericColumns = columns,
   allowedCaveats: string[] = [],
+  validate?: (result: AnalysisResult) => string | undefined,
 ) {
-  try {
-    return parseAnalysis(
-      await request(),
+  const parseValidated = async (correction?: string) => {
+    const result = parseAnalysis(
+      await request(correction),
       columns,
       allowedEvidence,
       numericColumns,
       allowedCaveats,
     );
+    const reason = validate?.(result);
+    if (reason) throw new Error(reason);
+    return result;
+  };
+  try {
+    return await parseValidated();
   } catch (firstError) {
     try {
-      return parseAnalysis(
-        await request(firstError instanceof Error ? firstError.message : "Invalid analysis output."),
-        columns,
-        allowedEvidence,
-        numericColumns,
-        allowedCaveats,
+      return await parseValidated(
+        firstError instanceof Error ? firstError.message : "Invalid analysis output.",
       );
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : "Analysis failed.";
+    } catch {
+      const evidence = [...allowedEvidence].slice(0, 3);
       return {
         analysis: {
-          summary: "The query succeeded, but the model analysis was unavailable.",
-          summaryEvidence: [],
+          summary: evidence.length
+            ? `Validated evidence: ${evidence.join(", ")}.`
+            : "The query succeeded, but no row evidence was available.",
+          summaryEvidence: evidence,
           insights: [],
-          caveats: [reason],
+          caveats: [...allowedCaveats, "A deterministic evidence fallback was used because model analysis was unavailable."],
         },
         chart: {
           type: "none" as const,
@@ -158,15 +160,28 @@ function samplingCaveat(profile: ResultProfile) {
     : undefined;
 }
 
-function caveatsFromProfile(profile: ResultProfile) {
-  const sampling = samplingCaveat(profile);
+function requestedCaveats(question: string) {
   return [
+    ...(/\bcensor|quan sát thiếu|biên dữ liệu/i.test(question)
+      ? ["The result is subject to left/right censoring at the observed data boundaries."]
+      : []),
+    ...(/\bpartial|\bincomplete|không đầy đủ|chưa đầy đủ|boundary months|tháng biên/i.test(question)
+      ? ["The requested comparison includes a partial or incomplete data period."]
+      : []),
+  ];
+}
+
+function caveatsFromProfile(profile: ResultProfile, question = "", extraCaveats: string[] = []) {
+  const sampling = samplingCaveat(profile);
+  return [...new Set([
     ...(profile.truncated ? ["Results were limited to 1000 rows."] : []),
     ...(sampling ? [sampling] : []),
     ...profile.columns
       .filter(({ nullCount }) => nullCount > 0)
       .map(({ name, nullCount }) => `${name} contains ${nullCount} null values.`),
-  ];
+    ...requestedCaveats(question),
+    ...extraCaveats,
+  ])];
 }
 
 function evidenceFromRow(row: Row) {
@@ -175,16 +190,15 @@ function evidenceFromRow(row: Row) {
 
 export function deterministicAnalysis(
   question: string,
-  sql: string,
+  _sql: string,
   profile: ResultProfile,
+  extraCaveats: string[] = [],
 ): AnalysisResult | undefined {
   if (!profile.rowCount) return;
 
   const vietnamese = /[ăâđêôơưàáạảãằắặẳẵầấậẩẫèéẹẻẽềếệểễìíịỉĩòóọỏõồốộổỗờớợởỡùúụủũừứựửữỳýỵỷỹ]/i.test(question);
-  const caveats = caveatsFromProfile(profile);
+  const caveats = caveatsFromProfile(profile, question, extraCaveats);
   const first = profile.sampleRows[0];
-  const columns = profile.columns.map(({ name }) => name);
-  const numeric = profile.columns.filter(({ type }) => type === "number").map(({ name }) => name);
 
   if (profile.rowCount === 1) {
     const evidence = evidenceFromRow(first);
@@ -204,64 +218,6 @@ export function deterministicAnalysis(
       followUpQuestions: [],
     };
   }
-
-  const requestedLimit = Number(sql.match(/\blimit\s+(\d+)\s*$/i)?.[1]);
-  const ranking = requestedLimit > 0 && requestedLimit < 1000 && /\border\s+by\b/i.test(sql);
-  if (ranking) {
-    const label = columns.find((column) => !numeric.includes(column)) ?? columns[0];
-    const metric = numeric[0];
-    const evidence = [label, metric].filter(Boolean).map((column) => `${column} = ${String(first[column])}`);
-    return {
-      analysis: {
-        summary: vietnamese
-          ? `Kết quả xếp hạng có ${profile.rowCount} dòng; dòng đầu là ${evidence.join(", ")}.`
-          : `The ranking has ${profile.rowCount} rows; the first is ${evidence.join(", ")}.`,
-        summaryEvidence: evidence,
-        insights: [],
-        caveats,
-      },
-      chart: metric
-        ? {
-            type: "bar",
-            reason: vietnamese ? "Biểu đồ cột phù hợp với kết quả xếp hạng." : "A bar chart fits ranked results.",
-            xKey: label,
-            yKeys: [metric],
-          }
-        : { type: "none", reason: "The ranking has no numeric metric to chart." },
-      followUpQuestions: [],
-    };
-  }
-
-  const timeColumns = columns.filter((column) => /(?:^|_)(?:year|month|date|time)(?:_|$)/i.test(column));
-  if (timeColumns.length) {
-    const evidence = timeColumns.map((column) => `${column} = ${String(first[column])}`);
-    const yKey = numeric.find((column) => !timeColumns.includes(column));
-    return {
-      analysis: {
-        summary: vietnamese
-          ? `Chuỗi thời gian trả về ${profile.rowCount} điểm dữ liệu.`
-          : `The time series returned ${profile.rowCount} data points.`,
-        summaryEvidence: evidence,
-        insights: [],
-        caveats,
-      },
-      chart:
-        timeColumns.length === 1 && yKey
-          ? {
-              type: "line",
-              reason: vietnamese ? "Biểu đồ đường phù hợp với chuỗi thời gian." : "A line chart fits a time series.",
-              xKey: timeColumns[0],
-              yKeys: [yKey],
-            }
-          : {
-              type: "none",
-              reason: vietnamese
-                ? "Biểu đồ hiện tại không hỗ trợ nhiều chiều thời gian."
-                : "The current chart does not support multiple time dimensions.",
-            },
-      followUpQuestions: [],
-    };
-  }
 }
 
 export async function analyzeResult(
@@ -269,6 +225,8 @@ export async function analyzeResult(
   sql: string,
   profile: ResultProfile,
   useDeterministic = true,
+  brief?: AnalysisBrief,
+  qualityCaveats: string[] = [],
 ) {
   if (!profile.rowCount) {
     return {
@@ -276,7 +234,7 @@ export async function analyzeResult(
         summary: "The query returned no data.",
         summaryEvidence: [],
         insights: [],
-        caveats: ["There is no evidence available for this question."],
+        caveats: [...new Set(["There is no evidence available for this question.", ...qualityCaveats])],
       },
       chart: {
         type: "none" as const,
@@ -286,14 +244,20 @@ export async function analyzeResult(
     };
   }
 
+  // ponytail: bound wide result prompts; add relevance-based column selection only when wide-table evals require it.
+  const evidenceRowLimit = Math.max(1, Math.floor(200 / Math.max(1, profile.columns.length)));
+  if (profile.sampleRows.length > evidenceRowLimit) {
+    profile = { ...profile, sampleRows: profile.sampleRows.slice(0, evidenceRowLimit) };
+  }
+
   const allowedEvidence = evidenceFromRows(profile.sampleRows);
   const deterministic = useDeterministic
-    ? deterministicAnalysis(question, sql, profile)
+    ? deterministicAnalysis(question, sql, profile, qualityCaveats)
     : undefined;
   const sampling = samplingCaveat(profile);
   if (deterministic) return deterministic;
 
-  const allowedCaveats = caveatsFromProfile(profile);
+  const allowedCaveats = caveatsFromProfile(profile, question, qualityCaveats);
   const columns = profile.columns.map(({ name }) => name);
   const numericColumns = profile.columns
     .filter(({ type }) => type === "number")
@@ -325,6 +289,7 @@ export async function analyzeResult(
         role: "user",
         content: JSON.stringify({
           question,
+          brief,
           sql,
           semantics: getDatasetGuide(),
           profile: {
@@ -363,77 +328,7 @@ export async function analyzeResult(
       maxTokens: tokenBudget("OPENAI_ANALYSIS_MAX_TOKENS", 2400),
       reasoningEffort: stageReasoningEffort("OPENAI_ANALYSIS_REASONING_EFFORT", Boolean(correction)),
       temperature: 0,
-      responseFormat: {
-        type: "json_object",
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          required: ["analysis", "chart", "followUpQuestions"],
-          properties: {
-            analysis: {
-              type: "object",
-              additionalProperties: false,
-              required: ["summary", "summaryEvidence", "insights", "caveats"],
-              properties: {
-                summary: { type: "string" },
-                summaryEvidence: {
-                  type: "array",
-                  minItems: 1,
-                  maxItems: 2,
-                  items: { type: "string", enum: [...allowedEvidence] },
-                },
-                insights: {
-                  type: "array",
-                  maxItems: 3,
-                  items: {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["statement", "evidence"],
-                    properties: {
-                      statement: { type: "string" },
-                      evidence: {
-                        type: "array",
-                        minItems: 1,
-                        maxItems: 2,
-                        items: { type: "string", enum: [...allowedEvidence] },
-                      },
-                    },
-                  },
-                },
-                caveats: {
-                  type: "array",
-                  maxItems: allowedCaveats.length,
-                  items: { type: "string", enum: allowedCaveats },
-                },
-              },
-            },
-            chart: {
-              type: "object",
-              additionalProperties: false,
-              required: ["type", "reason"],
-              properties: {
-                type: { type: "string", enum: ["bar", "line", "none"] },
-                reason: { type: "string" },
-                xKey: { type: "string", enum: columns },
-                yKeys: {
-                  type: "array",
-                  minItems: 1,
-                  maxItems: 1,
-                  items: {
-                    type: "string",
-                    enum: numericColumns.length ? numericColumns : columns,
-                  },
-                },
-              },
-            },
-            followUpQuestions: {
-              type: "array",
-              maxItems: 3,
-              items: { type: "string" },
-            },
-          },
-        },
-      },
+      responseFormat: { type: "json_object" },
     },
     ),
   );
@@ -444,9 +339,30 @@ export async function analyzeResult(
     allowedEvidence,
     numericColumns,
     allowedCaveats,
+    (result) => {
+      const validation = evaluateSummary(
+        result.analysis.summary,
+        result.analysis.summaryEvidence,
+        result.analysis.caveats,
+        profile,
+        [],
+        [],
+        profile.sampleRows,
+        question,
+      );
+      const failures = [
+        ...(validation.numbersGrounded ? [] : [`Unsupported numbers: ${validation.unsupportedNumbers.join(", ")}.`]),
+        // ponytail: cross-step comparison validation needs sentence-to-step provenance.
+        ...(profile.sampleRows.some((row) => "analysis_step" in row) ? [] : validation.comparisons.failures),
+      ];
+      return failures.length ? failures.join(" ") : undefined;
+    },
   );
   if (sampling && !analyzed.analysis.caveats.includes(sampling)) {
     analyzed.analysis.caveats.push(sampling);
+  }
+  for (const caveat of requestedCaveats(question)) {
+    if (!analyzed.analysis.caveats.includes(caveat)) analyzed.analysis.caveats.push(caveat);
   }
   return analyzed;
 }

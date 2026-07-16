@@ -1,3 +1,5 @@
+import type { AnalysisBrief } from "./queryPlan";
+
 export type Schema = Record<string, string[]>;
 
 export type Row = Record<string, string | number | null>;
@@ -34,8 +36,10 @@ export type AnalysisStep = {
   kind: "query";
   purpose: string;
   question: string;
-  requiredGrain: string;
-  filters: string[];
+  brief: AnalysisBrief;
+  sql: string;
+  sqlAttempts?: Array<{ attempt: number; sql: string; error: string }>;
+  quality: { issues: string[]; caveats: string[] };
   result: {
     sql: string;
     columns: string[];

@@ -17,16 +17,24 @@ export function validateQueryPlan(plan: QueryPlanRow[]) {
       "Correlated subqueries are not supported. Rewrite the query using JOINs.",
     );
   }
+  const tableReads = plan.filter(({ detail }) => /^(?:SCAN\s+(?!CONSTANT\b)|SEARCH\s+)/i.test(detail)).length;
+  if (tableReads > 1 && plan.some(({ detail }) => /USE TEMP B-TREE FOR DISTINCT/i.test(detail))) {
+    throw new Error(
+      "DISTINCT across a multi-table query is too expensive. Count a stable key in one joined aggregate.",
+    );
+  }
 }
 
 export function prepareReadOnlyQuery(sql: string, limit = 1000) {
   const safeSql = validateReadOnlySql(sql);
-  if (/\blimit\s+\d+(?:\s+offset\s+\d+)?\s*$/i.test(safeSql)) {
+  const explicitLimit = safeSql.match(/\blimit\s+(\d+)(?:\s+offset\s+\d+)?\s*$/i);
+  if (explicitLimit && Number(explicitLimit[1]) <= limit) {
     return { displaySql: safeSql, executionSql: safeSql, limit: undefined };
   }
+  const boundedSql = /\blimit\b/i.test(safeSql) ? `SELECT * FROM (${safeSql})` : safeSql;
   return {
-    displaySql: `${safeSql} LIMIT ${limit}`,
-    executionSql: `${safeSql} LIMIT ${limit + 1}`,
+    displaySql: `${boundedSql} LIMIT ${limit}`,
+    executionSql: `${boundedSql} LIMIT ${limit + 1}`,
     limit,
   };
 }

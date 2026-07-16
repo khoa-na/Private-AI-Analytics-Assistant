@@ -1,4 +1,4 @@
-export type PipelineStage = "plan" | "sql" | "execution" | "analysis";
+export type PipelineStage = "plan" | "sql" | "review" | "execution" | "quality" | "analysis";
 
 export class PipelineStageError extends Error {
   sqlAttempts?: Array<{ attempt: number; sql: string; error: string }>;

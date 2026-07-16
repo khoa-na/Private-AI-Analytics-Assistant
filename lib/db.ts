@@ -23,8 +23,17 @@ export function getDatabasePath() {
   throw new Error("Active database not found. Activate a staged dataset or set ACTIVE_DATABASE_PATH.");
 }
 
+function nonNegativeInteger(name: string, fallback: number) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer.`);
+  return value;
+}
+
 export function getDb() {
+  const cacheKiB = nonNegativeInteger("SQLITE_CACHE_KIB", 65_536);
+  const mmapBytes = nonNegativeInteger("SQLITE_MMAP_BYTES", 1_073_741_824);
   const db = new DatabaseSync(getDatabasePath(), { readOnly: true });
+  db.exec(`PRAGMA cache_size = -${cacheKiB}; PRAGMA mmap_size = ${mmapBytes}`);
   db.enableDefensive(true);
   const allowed = new Set([
     constants.SQLITE_SELECT,

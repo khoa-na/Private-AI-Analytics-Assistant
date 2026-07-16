@@ -21,6 +21,9 @@ try {
   assert.equal(rows.length, 1);
   assert.equal(rows[0].sku, "A-1");
   assert.equal(rows[0].quantity, 7);
+  process.env.SQLITE_CACHE_KIB = "invalid";
+  assert.throws(() => getDb(), /SQLITE_CACHE_KIB/);
+  delete process.env.SQLITE_CACHE_KIB;
   const protectedDb = getDb();
   try {
     assert.throws(

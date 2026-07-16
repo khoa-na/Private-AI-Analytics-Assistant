@@ -1,9 +1,57 @@
 import type { ResultProfile, Row } from "./analyticsTypes";
+import type { AnalysisBrief } from "./queryPlan";
+
+export type ResultQuality = {
+  issues: string[];
+  caveats: string[];
+};
+
+export function evidenceFromRows(rows: Row[]) {
+  return new Set(
+    rows.flatMap((row) =>
+      Object.entries(row).map(([column, value]) =>
+        column === "analysis_step" || !("analysis_step" in row)
+          ? `${column} = ${String(value)}`
+          : `${String(row.analysis_step)}: ${column} = ${String(value)}`,
+      ),
+    ),
+  );
+}
+
+export function assessResultQuality(
+  columns: string[],
+  rows: Row[],
+  truncated: boolean,
+  brief: AnalysisBrief,
+): ResultQuality {
+  const missing = brief.outputColumns.filter((column) => !columns.includes(column));
+  const issues = missing.length
+    ? [`Result is missing required output columns: ${missing.join(", ")}.`]
+    : [];
+
+  if (rows.length > 1 && brief.dimensions.length === 0) {
+    issues.push(`Brief declares scalar grain but SQL returned ${rows.length} rows.`);
+  } else if (rows.length > 1 && brief.dimensions.every((column) => columns.includes(column))) {
+    const keys = rows.map((row) => JSON.stringify(brief.dimensions.map((column) => row[column] ?? null)));
+    if (new Set(keys).size !== keys.length) {
+      issues.push(`Result contains duplicate rows at the declared grain: ${brief.dimensions.join(", ")}.`);
+    }
+  }
+
+  const caveats = [
+    ...(!rows.length ? ["The query returned no rows."] : []),
+    ...(truncated ? ["The query result was truncated by the row limit."] : []),
+    ...brief.outputColumns
+      .filter((column) => columns.includes(column) && rows.length > 0 && rows.every((row) => row[column] == null))
+      .map((column) => `${column} contains only null values.`),
+  ];
+  return { issues, caveats };
+}
 
 export function profileResult(rows: Row[], sampleSize = 50, truncated = false): ResultProfile {
-  const names = rows.length ? Object.keys(rows[0]) : [];
+  const names = [...new Set(rows.flatMap((row) => Object.keys(row)))];
   const columns = names.map((name) => {
-    const values = rows.map((row) => row[name]);
+    const values = rows.filter((row) => Object.hasOwn(row, name)).map((row) => row[name]);
     const present = values.filter((value) => value !== null);
     const numbers = present.filter(
       (value): value is number => typeof value === "number",

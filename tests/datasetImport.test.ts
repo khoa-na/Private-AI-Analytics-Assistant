@@ -180,6 +180,7 @@ try {
 
   const stagedDatabase = join(directory, "database.sqlite");
   const stagedDb = new DatabaseSync(stagedDatabase);
+  assert.ok(stagedDb.prepare("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_stat1'").get());
   assert.ok(stagedDb.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx:orders:customer_id'").get());
   stagedDb.exec('DROP INDEX "idx:orders:customer_id"');
   stagedDb.exec('CREATE INDEX "idx:orders:stale" ON orders(order_id)');
