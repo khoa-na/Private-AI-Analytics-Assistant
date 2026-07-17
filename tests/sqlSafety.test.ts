@@ -10,6 +10,7 @@ assert.equal(
 assert.throws(() => validateReadOnlySql("DELETE FROM orders"), /read-only/);
 assert.throws(() => validateReadOnlySql("SELECT * FROM orders; DROP TABLE orders"), /read-only/);
 assert.throws(() => validateReadOnlySql("SELECT 1; SELECT 2"), /single SELECT/);
+assert.throws(() => validateReadOnlySql("SELECT * FROM read_parquet('secret.parquet')"), /External files/);
 assert.equal(
   validateReadOnlySql("SELECT * FROM orders CROSS JOIN customers"),
   "SELECT * FROM orders CROSS JOIN customers",

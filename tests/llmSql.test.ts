@@ -1,10 +1,25 @@
 import assert from "node:assert/strict";
-import { generateSql, getSqlContext, needsSqlReview, parseSqlPlan, parseSqlReview } from "../lib/llmSql";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DuckDBInstance } from "@duckdb/node-api";
+import { generateSql, getSqlContext, needsSqlReview, parseMultiOutline, parseSqlPlan, parseSqlReview, shouldFallbackToOutline } from "../lib/llmSql";
 
-const context = getSqlContext();
+const directory = mkdtempSync(join(tmpdir(), "llm-sql-"));
+const database = join(directory, "database.duckdb");
+const instance = await DuckDBInstance.create(database);
+const db = await instance.connect();
+await db.run("CREATE TABLE facts (id INTEGER, category VARCHAR)");
+db.closeSync();
+instance.closeSync();
+process.env.ACTIVE_DATABASE_PATH = database;
+
+const context = await getSqlContext();
 assert.match(context, /Schema:/);
 assert.match(context, /Dataset semantics:/);
 assert.match(context, /Schema:\n[^\n]+\(/);
+assert.equal(shouldFallbackToOutline(new Error("Model returned no valid JSON object.")), true);
+assert.equal(shouldFallbackToOutline(new Error("401 invalid API key")), false);
 
 const scalarBrief = {
   objective: "Count rows",
@@ -18,6 +33,14 @@ assert.deepEqual(
   parseSqlPlan(JSON.stringify({
     intent: "query",
     brief: scalarBrief,
+    sql: "SELECT COUNT(*) AS row_count FROM facts",
+  }), "Count rows"),
+  { intent: "query", brief: scalarBrief, sql: "SELECT COUNT(*) AS row_count FROM facts" },
+);
+assert.deepEqual(
+  parseSqlPlan(JSON.stringify({
+    intent: "query",
+    brief: { ...scalarBrief, filters: ["", null] },
     sql: "SELECT COUNT(*) AS row_count FROM facts",
   }), "Count rows"),
   { intent: "query", brief: scalarBrief, sql: "SELECT COUNT(*) AS row_count FROM facts" },
@@ -48,6 +71,21 @@ if (multi.intent !== "multi_query") throw new Error("Expected multi-query plan."
 assert.equal(multi.steps.length, 2);
 assert.match(multi.steps[0].question, /Monthly trend/);
 assert.equal(multi.steps[1].question, "Count rows by category");
+const recoveredMulti = parseSqlPlan(JSON.stringify({
+  intent: "multi_query",
+  steps: [
+    { purpose: "Monthly trend", sql: "SELECT month, COUNT(*) n FROM facts GROUP BY month" },
+    { purpose: "Category mix", sql: "SELECT category, COUNT(*) n FROM facts GROUP BY category" },
+  ],
+}), "Compare trend and mix");
+assert.equal(recoveredMulti.intent, "multi_query");
+if (recoveredMulti.intent !== "multi_query") throw new Error("Expected multi-query plan.");
+assert.equal(recoveredMulti.brief, undefined);
+assert.equal(recoveredMulti.steps[0].brief, undefined);
+assert.deepEqual(parseMultiOutline('{"steps":[{"purpose":"Trend","question":"Monthly trend?"},{"purpose":"Mix","question":"Category mix?"}]}'), [
+  { purpose: "Trend", question: "Monthly trend?" },
+  { purpose: "Mix", question: "Category mix?" },
+]);
 assert.throws(
   () => parseSqlPlan('{"intent":"multi_query","steps":[{"purpose":"Only","sql":"SELECT 1"}]}', "One step"),
   /two or three/,
@@ -93,3 +131,5 @@ try {
 }
 
 console.log("llmSql tests passed");
+delete process.env.ACTIVE_DATABASE_PATH;
+rmSync(directory, { recursive: true, force: true });

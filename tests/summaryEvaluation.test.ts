@@ -23,6 +23,7 @@ assert.equal(intentMatchesExpected("clarification", "refusal"), false);
 assert.equal(matchesTextPatterns("The dataset does not include orders.", ["missing|unavailable"]), true);
 assert.equal(matchesTextPatterns("The metric is not available.", ["unavailable"]), true);
 assert.equal(matchesTextPatterns("Please clarify the definition.", ["define|meaning"]), true);
+assert.equal(matchesTextPatterns("The metric is not defined without a denominator.", ["mẫu số|không có"]), true);
 
 const profile = profileResult([{ customer_state: "SP", delivery_days: 8.1123 }]);
 assert.equal(
@@ -65,6 +66,14 @@ assert.equal(
   evaluateExpectedFacts(monthlyFacts, [{ column: "month", value: "2020-06", rowIndex: 1 }]),
   false,
 );
+assert.equal(evaluateExpectedFacts(
+  [{ month: "2020-06-01T00:00:00.000Z", transaction_rows: 100 }],
+  [{ column: "transaction_rows", value: 100, where: { month: "2020-06" } }],
+), true);
+assert.equal(evaluateExpectedFacts(
+  [{ activity_bucket: "over 10", customer_count: 5 }],
+  [{ column: "customer_count", value: 5, where: { activity_bucket: ">10" } }],
+), true);
 assert.equal(
   evaluateSummary(
     "SP averaged 8.11 delivery days.",

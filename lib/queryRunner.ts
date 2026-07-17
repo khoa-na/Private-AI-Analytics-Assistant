@@ -1,5 +1,5 @@
 import type { Row } from "./analyticsTypes";
-import { getDb } from "./db";
+import { getDb, readQuery } from "./db";
 import { validateReadOnlySql } from "./sqlSafety";
 
 export type QueryResult = {
@@ -8,22 +8,6 @@ export type QueryResult = {
   rows: Row[];
   truncated: boolean;
 };
-
-type QueryPlanRow = { detail: string };
-
-export function validateQueryPlan(plan: QueryPlanRow[]) {
-  if (plan.some(({ detail }) => /CORRELATED .*SUBQUERY/i.test(detail))) {
-    throw new Error(
-      "Correlated subqueries are not supported. Rewrite the query using JOINs.",
-    );
-  }
-  const tableReads = plan.filter(({ detail }) => /^(?:SCAN\s+(?!CONSTANT\b)|SEARCH\s+)/i.test(detail)).length;
-  if (tableReads > 1 && plan.some(({ detail }) => /USE TEMP B-TREE FOR DISTINCT/i.test(detail))) {
-    throw new Error(
-      "DISTINCT across a multi-table query is too expensive. Count a stable key in one joined aggregate.",
-    );
-  }
-}
 
 export function prepareReadOnlyQuery(sql: string, limit = 1000) {
   const safeSql = validateReadOnlySql(sql);
@@ -39,23 +23,19 @@ export function prepareReadOnlyQuery(sql: string, limit = 1000) {
   };
 }
 
-export function runReadOnlyQuery(sql: string): QueryResult {
+export async function runReadOnlyQuery(sql: string): Promise<QueryResult> {
   const prepared = prepareReadOnlyQuery(sql);
-  const db = getDb();
-
+  const db = await getDb();
   try {
-    validateQueryPlan(
-      db.prepare(`EXPLAIN QUERY PLAN ${prepared.executionSql}`).all() as QueryPlanRow[],
-    );
-    const statement = db.prepare(prepared.executionSql);
-    const rows = statement.all() as Row[];
+    const result = await readQuery(db, prepared.executionSql);
+    const rows = result.rows as Row[];
     return {
       sql: prepared.displaySql,
-      columns: statement.columns().map((column) => column.name),
+      columns: result.columns,
       rows: prepared.limit ? rows.slice(0, prepared.limit) : rows,
       truncated: prepared.limit !== undefined && rows.length > prepared.limit,
     };
   } finally {
-    db.close();
+    db.closeSync();
   }
 }

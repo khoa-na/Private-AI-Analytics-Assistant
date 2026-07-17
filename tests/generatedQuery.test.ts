@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateAndRunQuery } from "../lib/generatedQuery";
+import { generateAndRunQuery, sqlContractIssues } from "../lib/generatedQuery";
 import type { SqlCorrection } from "../lib/llmSql";
 import type { QueryResult } from "../lib/queryRunner";
 import {
@@ -20,6 +20,31 @@ const privacyCatalog: PrivacyCatalog = {
     },
   },
 };
+
+assert.deepEqual(sqlContractIssues("Return the seven-day average.", "SELECT ROUND(AVG(n), 2) value FROM facts"), [
+  "Preserve full numeric precision; rounding was not requested.",
+]);
+assert.equal(sqlContractIssues("Return the MoM decrease.", "SELECT (value - prior) / prior AS change FROM facts").length, 1);
+assert.equal(sqlContractIssues("Return the MoM row share change.", "SELECT part / total AS row_share FROM facts").length, 0);
+assert.equal(sqlContractIssues("Audit values outside {0,1}.", "SELECT (SELECT COUNT(*) FROM t WHERE flag NOT IN (0,1) OR flag IS NULL) AS invalid_flag_rows").length, 1);
+assert.equal(sqlContractIssues("Audit values outside {0,1}.", "SELECT COUNT(*) AS invalid_flag_rows FROM t WHERE flag IS NULL").length, 1);
+assert.equal(sqlContractIssues(
+  "Count missing identifiers and values outside {0,1} as separate metrics.",
+  "SELECT (SELECT COUNT(*) FROM t WHERE id IS NULL) AS missing_ids, (SELECT COUNT(*) FROM t WHERE flag NOT IN (0,1) OR flag IS NULL) AS invalid_flag_rows",
+).length, 1);
+assert.equal(sqlContractIssues(
+  "Count missing identifiers and values outside {0,1} as separate metrics.",
+  "SELECT (SELECT COUNT(*) FROM t WHERE id IS NULL) AS missing_ids, (SELECT COUNT(*) FROM t WHERE flag IS NOT NULL AND flag NOT IN (0,1)) AS invalid_flag_rows",
+).length, 0);
+assert.equal(sqlContractIssues(
+  "Count missing identifiers and invalid domains separately.",
+  "SELECT COUNT(*) FILTER (WHERE id IS NULL) AS missing_ids, COUNT(*) FILTER (WHERE flag IS NOT NULL AND flag NOT IN (0,1)) AS invalid_flag_rows FROM t",
+).length, 0);
+assert.equal(sqlContractIssues(
+  "Group rows by age band.",
+  "SELECT CASE WHEN age < 30 THEN 'young' ELSE 'older' END AS age_band, COUNT(*) n FROM people GROUP BY age_band",
+).length, 1);
+assert.equal(sqlContractIssues("Count rows with a sentinel in audited fields.", "SELECT COUNT(*) FILTER (WHERE a=-1 AND b=-1 AND c=-1) AS sentinel_rows FROM t").length, 1);
 
 assert.match(
   privacyRefusalForQuestion("List customer_id and exact age.", privacyCatalog) ?? "",

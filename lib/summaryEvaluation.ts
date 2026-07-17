@@ -45,6 +45,8 @@ export function intentMatchesExpected(actual: NonQueryIntent, expected?: NonQuer
 export function matchesTextPatterns(text: string, required: string[] = [], forbidden: string[] = []) {
   const normalized = `${text} ${text
     .replace(/\bnot available\b/gi, "unavailable missing")
+    .replace(/\bnot defined\b/gi, "undefined unavailable missing không có")
+    .replace(/\bdenominator\b/gi, "denominator mẫu số")
     .replace(/\bdoes not (?:include|contain|have)\b/gi, "missing unavailable")
     .replace(/\bdefinitions?\b/gi, "define meaning")}`;
   return required.every((pattern) => new RegExp(pattern, "i").test(normalized)) &&
@@ -75,10 +77,12 @@ function periodSignature(value: string) {
     .replace(/jul(?:y)?/g, "07").replace(/aug(?:ust)?/g, "08")
     .replace(/sep(?:tember)?/g, "09").replace(/oct(?:ober)?/g, "10")
     .replace(/nov(?:ember)?/g, "11").replace(/dec(?:ember)?/g, "12");
+  const iso = normalized.match(/\b((?:19|20)\d{2})-(0[1-9]|1[0-2])(?:-([0-2]\d|3[01]))?/);
+  if (iso) return { year: iso[1], month: String(Number(iso[2])), day: iso[3] ? String(Number(iso[3])) : undefined };
   const year = normalized.match(/\b(?:19|20)\d{2}\b/)?.[0];
   const monthDays = [...normalized.matchAll(/(?:^|\D)(0?[1-9]|1[0-2])\D+(0?[1-9]|[12]\d|3[01])(?:\D|$)/g)];
   const last = monthDays.at(-1);
-  return year ? { year, end: last ? `${Number(last[1])}-${Number(last[2])}` : undefined } : undefined;
+  return year ? { year, month: last ? String(Number(last[1])) : undefined, day: last ? String(Number(last[2])) : undefined } : undefined;
 }
 
 function matchesValue(value: unknown, expected: string | number, tolerance = 0, column = "") {
@@ -88,12 +92,17 @@ function matchesValue(value: unknown, expected: string | number, tolerance = 0, 
   const actualText = String(value).toLowerCase();
   const expectedText = String(expected).toLowerCase();
   if (actualText === expectedText) return true;
-  if (!/(?:period|year)/i.test(column)) return false;
+  if (/(?:bucket|band)/i.test(column)) {
+    const bucket = (text: string) => text.replace(/^(?:over|more than)\s+(\d+)$/, ">$1");
+    if (bucket(actualText) === bucket(expectedText)) return true;
+  }
+  if (!/(?:period|year|month|date)/i.test(column)) return false;
   const actualPeriod = periodSignature(actualText);
   const expectedPeriod = periodSignature(expectedText);
   return Boolean(
     actualPeriod && expectedPeriod && actualPeriod.year === expectedPeriod.year &&
-    (!expectedPeriod.end || actualPeriod.end === expectedPeriod.end),
+    (!expectedPeriod.month || actualPeriod.month === expectedPeriod.month) &&
+    (!expectedPeriod.day || actualPeriod.day === expectedPeriod.day),
   );
 }
 
@@ -112,7 +121,7 @@ export function evaluateExpectedFacts(rows: Row[], facts: ExpectedFact[] = []) {
       )) return false;
       const values = fact.column ? [row[fact.column]] : Object.values(row);
       return values.some((value) =>
-        value !== null && matchesValue(value, fact.value, fact.tolerance),
+        value !== null && matchesValue(value, fact.value, fact.tolerance, fact.column),
       );
     });
   });

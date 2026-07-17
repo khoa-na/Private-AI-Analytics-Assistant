@@ -57,9 +57,9 @@ assert.equal(questions.length, 73);
 
 const hm = readSuite("evals/hm.json");
 validateCommon(hm);
-assert.equal(hm.length, 96);
+assert.equal(hm.length, 97);
 assert.equal(hm.filter(({ language }) => language === "en").length, 48);
-assert.equal(hm.filter(({ language }) => language === "vi").length, 48);
+assert.equal(hm.filter(({ language }) => language === "vi").length, 49);
 assert.ok(hm.every(({ difficulty }) =>
   ["basic", "intermediate", "advanced", "expert"].includes(difficulty ?? ""),
 ));

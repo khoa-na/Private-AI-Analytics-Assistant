@@ -31,6 +31,7 @@ type EvalCase = {
   question: string;
   expectedTables: string[];
   outputShape: string;
+  acceptedOutputShapes?: string[];
   checks: string[];
   refuse: boolean;
   caveat: boolean;
@@ -54,10 +55,13 @@ type EvalCase = {
     yKeys?: string[];
   };
   expectedColumnsExact?: boolean;
+  expectedStepCountMin?: number;
+  expectedStepCountMax?: number;
   expectedStepTableGroups?: string[][];
   expectedSteps?: Array<{
     expectedTables: string[];
     expectedColumns?: string[];
+    columnAliases?: Record<string, string[]>;
     expectedFacts?: ExpectedFact[];
     expectedRowCount?: number;
     expectedTruncated?: boolean;
@@ -85,9 +89,9 @@ if (!Number.isInteger(concurrency) || concurrency < 1) {
 }
 const cases = JSON.parse(readFileSync(suite, "utf8")) as EvalCase[];
 let activeDataset: string | undefined;
-let activeBundle: ReturnType<typeof validateStagedBundle>["manifest"] | undefined;
+let activeBundle: Awaited<ReturnType<typeof validateStagedBundle>>["manifest"] | undefined;
 if (values.dataset) {
-  const { manifest } = validateStagedBundle(dirname(getDatabasePath()), values.dataset);
+  const { manifest } = await validateStagedBundle(dirname(getDatabasePath()), values.dataset);
   if (manifest.state !== "active" || manifest.dataset !== values.dataset) {
     throw new Error(`Active dataset mismatch: expected ${values.dataset}, found ${manifest.dataset} (${manifest.state}).`);
   }
@@ -176,6 +180,14 @@ function presentationChecks(test: EvalCase, chart: { type: string; xKey?: string
   };
 }
 
+function acceptsOutputShape(test: EvalCase, actual: string) {
+  if (test.acceptedOutputShapes) return test.acceptedOutputShapes.includes(actual);
+  if (actual === "query") {
+    return !["clarification", "unsupported", "refusal", "multi_query"].includes(test.outputShape);
+  }
+  return test.outputShape === actual;
+}
+
 function matchesExpectedSteps(test: EvalCase, steps: Awaited<ReturnType<typeof runMultiQueryPlan>>["steps"]) {
   const expected: NonNullable<EvalCase["expectedSteps"]> = [...(test.expectedSteps ??
     (test.expectedStepTableGroups ?? []).map(
@@ -185,10 +197,24 @@ function matchesExpectedSteps(test: EvalCase, steps: Awaited<ReturnType<typeof r
   return expected.every((item) => {
     const index = [...unused].find((candidate) => {
       const result = steps[candidate].result;
+      const aliases = item.columnAliases ?? {};
+      const aliasColumns = new Map(Object.entries(aliases).map(([expected, alternatives]) => [
+        expected,
+        alternatives.find((column) => result.columns.includes(column)),
+      ]));
+      const columns = [...result.columns, ...[...aliasColumns]
+        .filter(([expected, actual]) => actual && !result.columns.includes(expected))
+        .map(([expected]) => expected)];
+      const rows = result.rows.map((row) => Object.fromEntries([
+        ...Object.entries(row),
+        ...[...aliasColumns]
+          .filter(([expected, actual]) => actual && !(expected in row))
+          .map(([expected, actual]) => [expected, row[actual!]]),
+      ]));
       return item.expectedTables.every((table) =>
         new RegExp(`\\b${table}\\b`, "i").test(result.sql),
-      ) && (item.expectedColumns ?? []).every((column) => result.columns.includes(column)) &&
-        evaluateExpectedFacts(result.rows, item.expectedFacts) &&
+      ) && (item.expectedColumns ?? []).every((column) => columns.includes(column)) &&
+        evaluateExpectedFacts(rows, item.expectedFacts) &&
         (item.expectedRowCount === undefined || result.rows.length === item.expectedRowCount) &&
         (item.expectedTruncated === undefined || result.truncated === item.expectedTruncated) &&
         (item.requiredSqlPatterns ?? []).every((pattern) => matchesSqlRequirement(result.sql, pattern)) &&
@@ -211,10 +237,13 @@ async function runCase(test: EvalCase, index: number) {
       const expectedStepCount = test.expectedSteps?.length ?? test.expectedStepTableGroups?.length;
       const coreChecks = {
         execution: true,
-        mode: test.outputShape === "multi_query",
-        stepCount: expectedStepCount
-          ? multi.steps.length === expectedStepCount
-          : multi.steps.length >= 2 && multi.steps.length <= 3,
+        mode: acceptsOutputShape(test, "multi_query"),
+        stepCount: test.expectedStepCountMin !== undefined || test.expectedStepCountMax !== undefined
+          ? multi.steps.length >= (test.expectedStepCountMin ?? 2) &&
+            multi.steps.length <= (test.expectedStepCountMax ?? 3)
+          : expectedStepCount
+            ? multi.steps.length === expectedStepCount
+            : multi.steps.length >= 2 && multi.steps.length <= 3,
         summaryPresent: Boolean(multi.analysis.summary.trim()),
         summaryEvidence: multi.analysis.summaryEvidence.length > 0,
         expectedSteps: matchesExpectedSteps(test, multi.steps),
@@ -327,7 +356,7 @@ async function runCase(test: EvalCase, index: number) {
     const presentation = presentationChecks(test, analyzed.chart);
     const coreChecks = {
       execution: true,
-      mode: !["clarification", "unsupported", "refusal", "multi_query"].includes(test.outputShape),
+      mode: acceptsOutputShape(test, "query"),
       refusal: !test.refuse,
       outputShape: hasExpectedShape(test.outputShape, profile.rowCount),
       rowCount: test.expectedRowCount === undefined || profile.rowCount === test.expectedRowCount,

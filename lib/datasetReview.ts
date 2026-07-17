@@ -6,7 +6,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DuckDBInstance } from "@duckdb/node-api";
+import { queryRows } from "./db";
 import {
   quickCheckDatabase,
   REVIEW_REPORT_NAME,
@@ -64,11 +65,13 @@ function entityDefinitions(profile: DatasetProfile) {
   }));
 }
 
-function reviewRelationships(value: unknown, profile: DatasetProfile) {
-  const db = new DatabaseSync(profile.databasePath, { readOnly: true });
+async function reviewRelationships(value: unknown, profile: DatasetProfile) {
+  const instance = await DuckDBInstance.create(profile.databasePath, { access_mode: "READ_ONLY" });
+  const db = await instance.connect();
   try {
     const candidates = Array.isArray(value) ? value : [];
-    return candidates.map((candidate) => {
+    const results = [];
+    for (const candidate of candidates) {
       const from = isRecord(candidate) ? reference(candidate.from, profile) : undefined;
       const to = isRecord(candidate) ? reference(candidate.to, profile) : undefined;
       const checks = { references: Boolean(from && to), targetNonNull: false, targetUnique: false, orphanFree: false };
@@ -77,19 +80,19 @@ function reviewRelationships(value: unknown, profile: DatasetProfile) {
         const parentColumn = quoteIdentifier(to.column);
         const child = quoteIdentifier(from.table);
         const childColumn = quoteIdentifier(from.column);
-        checks.targetNonNull = !db.prepare(
+        checks.targetNonNull = !(await queryRows(db,
           `SELECT 1 FROM ${parent} WHERE ${parentColumn} IS NULL LIMIT 1`,
-        ).get();
-        checks.targetUnique = !db.prepare(
+        )).length;
+        checks.targetUnique = !(await queryRows(db,
           `SELECT 1 FROM ${parent} WHERE ${parentColumn} IS NOT NULL GROUP BY ${parentColumn} HAVING COUNT(*) > 1 LIMIT 1`,
-        ).get();
-        checks.orphanFree = !db.prepare(
+        )).length;
+        checks.orphanFree = !(await queryRows(db,
           `SELECT 1 FROM ${child} AS child WHERE child.${childColumn} IS NOT NULL AND NOT EXISTS (` +
           `SELECT 1 FROM ${parent} AS parent WHERE parent.${parentColumn} = child.${childColumn}) LIMIT 1`,
-        ).get();
+        )).length;
       }
       const approved = Object.values(checks).every(Boolean);
-      return {
+      results.push({
         from: from?.value ?? String(isRecord(candidate) ? candidate.from : ""),
         to: to?.value ?? String(isRecord(candidate) ? candidate.to : ""),
         decision: approved ? "approved" as const : "rejected" as const,
@@ -105,10 +108,12 @@ function reviewRelationships(value: unknown, profile: DatasetProfile) {
             },
           },
         } : {}),
-      };
-    });
+      });
+    }
+    return results;
   } finally {
-    db.close();
+    db.closeSync();
+    instance.closeSync();
   }
 }
 
@@ -158,7 +163,7 @@ async function aiMeasureReviews(
     {
       role: "system",
       content: [
-        "Blindly evaluate anonymous SQLite aggregate expressions for use as neutral technical measures.",
+        "Blindly evaluate anonymous DuckDB aggregate expressions for use as neutral technical measures.",
         "Return JSON only: {reviews:[{id,decision,evidence_ids}]}",
         "Decision must be approve or reject and every supplied id must appear exactly once.",
         "Do not create names, descriptions, grain, SQL, columns, or business meanings.",
@@ -240,14 +245,14 @@ function trustedMeasureProvenance(value: unknown) {
     value.evidence.every((item) => typeof item === "string" && item.trim());
 }
 
-function recoverReview(directory: string, dataset: string) {
+async function recoverReview(directory: string, dataset: string) {
   const semantic = join(directory, "semantic.json");
   const report = join(directory, REVIEW_REPORT_NAME);
   const semanticBackup = `${semantic}.review-backup`;
   const reportBackup = `${report}.review-backup`;
   if (!existsSync(semanticBackup)) return;
   try {
-    validateStagedBundle(directory, dataset);
+    await validateStagedBundle(directory, dataset);
     rmSync(semanticBackup, { force: true });
     rmSync(reportBackup, { force: true });
   } catch {
@@ -255,11 +260,11 @@ function recoverReview(directory: string, dataset: string) {
     rmSync(report, { force: true });
     renameSync(semanticBackup, semantic);
     if (existsSync(reportBackup)) renameSync(reportBackup, report);
-    validateStagedBundle(directory, dataset);
+    await validateStagedBundle(directory, dataset);
   }
 }
 
-function commitReview(
+async function commitReview(
   directory: string,
   expected: BundleState,
   semanticJson: string,
@@ -284,7 +289,7 @@ function commitReview(
     rmSync(semanticBackup, { force: true });
     rmSync(reportBackup, { force: true });
   } catch (error) {
-    recoverReview(directory, JSON.parse(readFileSync(join(directory, "dataset-profile.json"), "utf8")).dataset);
+    await recoverReview(directory, JSON.parse(readFileSync(join(directory, "dataset-profile.json"), "utf8")).dataset);
     throw error;
   } finally {
     rmSync(semanticTemporary, { force: true });
@@ -297,12 +302,12 @@ export async function reviewDataset(
   dataset: string,
   options: { useAi?: boolean } = {},
 ) {
-  recoverReview(directory, dataset);
-  const { manifest, profile } = validateStagedBundle(directory, dataset);
+  await recoverReview(directory, dataset);
+  const { manifest, profile } = await validateStagedBundle(directory, dataset);
   if (manifest.state === "active") throw new Error("Active bundles cannot be reviewed in place.");
-  quickCheckDatabase(profile.databasePath);
+  await quickCheckDatabase(profile.databasePath);
   const draft = JSON.parse(readFileSync(join(directory, "semantic.json"), "utf8")) as Record<string, unknown>;
-  if (draft.schema_version !== 1 || draft.dataset !== dataset || draft.dialect !== "sqlite") {
+  if (draft.schema_version !== 1 || draft.dataset !== dataset || draft.dialect !== "duckdb") {
     throw new Error("Review requires a matching semantic.json schema_version 1 draft.");
   }
 
@@ -312,12 +317,12 @@ export async function reviewDataset(
   ].filter((candidate, index, all) => isRecord(candidate) && all.findIndex((other) =>
     isRecord(other) && other.from === candidate.from && other.to === candidate.to
   ) === index);
-  const relationships = reviewRelationships(relationshipInput, profile);
+  const relationships = await reviewRelationships(relationshipInput, profile);
   const candidates = measureCandidates(draft);
-  const validated = candidates.map((candidate) => ({
+  const validated = await Promise.all(candidates.map(async (candidate) => ({
     candidate,
-    validation: validateMeasureDefinition(candidate, profile),
-  }));
+    validation: await validateMeasureDefinition(candidate, profile),
+  })));
   const warnings: string[] = [];
   const model = options.useAi === false ? undefined : process.env.OPENAI_REVIEW_MODEL || process.env.OPENAI_MODEL;
   let aiReviews = new Map<string, { evidence: string[] }>();
@@ -382,7 +387,7 @@ export async function reviewDataset(
     )),
     measure_candidates: [],
   };
-  validateApprovedSemantic(approvedSemantic, profile);
+  await validateApprovedSemantic(approvedSemantic, profile);
   const semanticJson = `${JSON.stringify(approvedSemantic, null, 2)}\n`;
   if (Buffer.byteLength(`${readFileSync(join(directory, "dataset.runtime.md"), "utf8")}\n${semanticJson}`) > 12_000) {
     throw new Error("Reviewed dataset guide is larger than the 12 KB runtime limit.");
@@ -410,7 +415,7 @@ export async function reviewDataset(
     measures: measureResults.map(({ semantic: _semantic, ...result }) => result),
     warnings,
   };
-  commitReview(directory, manifest.state, semanticJson, `${JSON.stringify(report, null, 2)}\n`, {
+  await commitReview(directory, manifest.state, semanticJson, `${JSON.stringify(report, null, 2)}\n`, {
     reviewer,
     ...(model && reviewer === "ai" ? { model } : {}),
     reviewedAt,
