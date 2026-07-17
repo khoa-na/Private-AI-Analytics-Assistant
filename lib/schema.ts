@@ -1,57 +1,53 @@
-import { getDb } from "./db";
+import { getDb, queryRows } from "./db";
 import type { Schema } from "./analyticsTypes";
 
-function quoteIdentifier(value: string) {
-  return `"${value.replaceAll('"', '""')}"`;
-}
-
-export function getSchema(): Schema {
-  const db = getDb();
+export async function getSchema(): Promise<Schema> {
+  const db = await getDb();
   try {
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
-      .all() as { name: string }[];
-
-    const schema: Schema = {};
-    for (const { name } of tables) {
-      const columns = db
-        .prepare(`PRAGMA table_info(${quoteIdentifier(name)})`)
-        .all() as { name: string }[];
-      schema[name] = columns.map((column) => column.name);
-    }
-
-    return schema;
+    const rows = await queryRows(db, `
+      SELECT table_name, column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'main'
+      ORDER BY table_name, ordinal_position
+    `) as Array<{ table_name: string; column_name: string }>;
+    return rows.reduce<Schema>((schema, row) => {
+      (schema[row.table_name] ??= []).push(row.column_name);
+      return schema;
+    }, {});
   } finally {
-    db.close();
+    db.closeSync();
   }
 }
 
-export function getSchemaText() {
-  const db = getDb();
+export async function getSchemaText() {
+  const db = await getDb();
   try {
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
-      .all() as { name: string }[];
-    return tables.map(({ name }) => {
-      const columns = db.prepare(`PRAGMA table_info(${quoteIdentifier(name)})`).all() as Array<{
-        name: string;
-        type: string;
-        pk: number;
-      }>;
-      const foreignKeys = db.prepare(`PRAGMA foreign_key_list(${quoteIdentifier(name)})`).all() as Array<{
-        table: string;
-        from: string;
-        to: string;
-      }>;
-      const fields = columns.map((column) =>
-        `${column.name} ${column.type || "UNKNOWN"}${column.pk ? " PRIMARY KEY" : ""}`,
-      );
-      const relationships = foreignKeys.map(
-        (key) => `FOREIGN KEY ${key.from} REFERENCES ${key.table}(${key.to})`,
-      );
-      return `${name}(${[...fields, ...relationships].join(", ")})`;
-    }).join("\n");
+    const rows = await queryRows(db, `
+      SELECT table_name, column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'main'
+      ORDER BY table_name, ordinal_position
+    `) as Array<{ table_name: string; column_name: string; data_type: string }>;
+    const constraints = await queryRows(db, `
+      SELECT table_name, constraint_column_names
+      FROM duckdb_constraints()
+      WHERE schema_name = 'main' AND constraint_type = 'PRIMARY KEY'
+    `) as Array<{ table_name: string; constraint_column_names: string[] }>;
+    const primaryKeys = new Map(constraints.map(({ table_name, constraint_column_names }) => [
+      table_name,
+      new Set(constraint_column_names),
+    ]));
+    const tables = new Map<string, typeof rows>();
+    for (const row of rows) {
+      if (!tables.has(row.table_name)) tables.set(row.table_name, []);
+      tables.get(row.table_name)!.push(row);
+    }
+    return [...tables].map(([name, columns]) =>
+      `${name}(${columns.map((column) =>
+        `${column.column_name} ${column.data_type}${primaryKeys.get(name)?.has(column.column_name) ? " PRIMARY KEY" : ""}`
+      ).join(", ")})`,
+    ).join("\n");
   } finally {
-    db.close();
+    db.closeSync();
   }
 }

@@ -21,10 +21,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function activeCatalog() {
-  const path = join(dirname(getDatabasePath()), "dataset-catalog.json");
-  return existsSync(path)
-    ? JSON.parse(readFileSync(path, "utf8")) as PrivacyCatalog
-    : undefined;
+  try {
+    const path = join(dirname(getDatabasePath()), "dataset-catalog.json");
+    return existsSync(path)
+      ? JSON.parse(readFileSync(path, "utf8")) as PrivacyCatalog
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function columnsByPrivacy(catalog: PrivacyCatalog, classes: PrivacyClass[]) {
@@ -63,7 +67,7 @@ export function privacyRefusalForSql(sql: string, catalog: PrivacyCatalog | unde
   ).map((column) => column.toLowerCase()));
   let ast: unknown;
   try {
-    ast = parser.astify(sql, { database: "sqlite" });
+    ast = parser.astify(sql, { database: "postgresql" });
   } catch {
     return;
   }
@@ -72,9 +76,13 @@ export function privacyRefusalForSql(sql: string, catalog: PrivacyCatalog | unde
   const exposesSensitive = statement.columns.some((item) => {
     if (!isRecord(item) || !isRecord(item.expr)) return false;
     if (item.expr.type === "star") return true;
-    return item.expr.type === "column_ref" &&
-      typeof item.expr.column === "string" &&
-      sensitive.has(item.expr.column.toLowerCase());
+    const column = item.expr.column;
+    const name = typeof column === "string"
+      ? column
+      : isRecord(column) && isRecord(column.expr) && typeof column.expr.value === "string"
+        ? column.expr.value
+        : undefined;
+    return item.expr.type === "column_ref" && Boolean(name && sensitive.has(name.toLowerCase()));
   });
   return exposesSensitive ? refusal : undefined;
 }

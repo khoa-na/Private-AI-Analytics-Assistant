@@ -168,6 +168,9 @@ function requestedCaveats(question: string) {
     ...(/\bpartial|\bincomplete|không đầy đủ|chưa đầy đủ|boundary months|tháng biên/i.test(question)
       ? ["The requested comparison includes a partial or incomplete data period."]
       : []),
+    ...(/\bhistorical\b|\bnot current\b|\bstale\b|dữ liệu lịch sử|không.*hiện tại/i.test(question)
+      ? ["The dataset is historical and not current."]
+      : []),
   ];
 }
 
@@ -202,9 +205,10 @@ export function deterministicAnalysis(
 
   if (profile.rowCount === 1) {
     const evidence = evidenceFromRow(first);
+    const required = requestedCaveats(question);
     return {
       analysis: {
-        summary: `${vietnamese ? "Kết quả" : "Result"}: ${evidence.join(", ")}.`,
+        summary: `${vietnamese ? "Kết quả" : "Result"}: ${evidence.join(", ")}.${required.length ? ` ${required.join(" ")}` : ""}`,
         summaryEvidence: evidence,
         insights: [],
         caveats,
@@ -288,10 +292,10 @@ export async function analyzeResult(
       {
         role: "user",
         content: JSON.stringify({
+          semantics: getDatasetGuide(),
           question,
           brief,
           sql,
-          semantics: getDatasetGuide(),
           profile: {
             rowCount: profile.rowCount,
             sampledRows: profile.sampleRows.length,
@@ -363,6 +367,7 @@ export async function analyzeResult(
   }
   for (const caveat of requestedCaveats(question)) {
     if (!analyzed.analysis.caveats.includes(caveat)) analyzed.analysis.caveats.push(caveat);
+    if (!analyzed.analysis.summary.includes(caveat)) analyzed.analysis.summary += ` ${caveat}`;
   }
   return analyzed;
 }

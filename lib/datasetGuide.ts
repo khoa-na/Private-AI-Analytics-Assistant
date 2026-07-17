@@ -45,3 +45,26 @@ export function getDatasetGuide() {
   }
   return guide || "No dataset-specific semantics are installed. Use only the database schema and ask for clarification when a business measure is ambiguous.";
 }
+
+export function getSemanticClarification(question: string) {
+  for (const path of getGuidePaths().filter((path) => path.toLowerCase().endsWith("semantic.json") && existsSync(path))) {
+    try {
+      const value = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+      const policy = value.analysis_policy as Record<string, unknown> | undefined;
+      const rules = Array.isArray(policy?.clarification_rules) ? policy.clarification_rules : [];
+      for (const rule of rules) {
+        if (!rule || typeof rule !== "object") continue;
+        const item = rule as Record<string, unknown>;
+        const all = Array.isArray(item.all) ? item.all.filter((term): term is string => typeof term === "string") : [];
+        const any = Array.isArray(item.any) ? item.any.filter((term): term is string => typeof term === "string") : [];
+        const unless = Array.isArray(item.unless) ? item.unless.filter((term): term is string => typeof term === "string") : [];
+        const includes = (term: string) => question.toLocaleLowerCase().includes(term.toLocaleLowerCase());
+        if (typeof item.message === "string" && all.every(includes) && (!any.length || any.some(includes)) && !unless.some(includes)) {
+          return item.message;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+}

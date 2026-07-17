@@ -1,51 +1,55 @@
-import { constants, DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-
-const activePath = process.env.ACTIVE_DATABASE_PATH ?? join("data", "active", "database.sqlite");
-export const dbPath = isAbsolute(activePath)
-  ? activePath
-  : resolve(process.cwd(), activePath);
-
-const legacyDbPaths = [
-  join(process.cwd(), "data", "olist", "database.sqlite"),
-  join(process.cwd(), "data", "active.db"),
-  join(process.cwd(), "data", "olist.sqlite"),
-];
+import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
 
 export function getDatabasePath() {
+  const activePath = process.env.ACTIVE_DATABASE_PATH ?? join("data", "active", "database.duckdb");
+  const dbPath = isAbsolute(activePath) ? activePath : resolve(process.cwd(), activePath);
   if (existsSync(dbPath)) return dbPath;
-  // ponytail: legacy fallbacks keep existing installs running; remove after active bundle migration.
-  if (!process.env.ACTIVE_DATABASE_PATH) {
-    const legacy = legacyDbPaths.find(existsSync);
-    if (legacy) return legacy;
-  }
-  throw new Error("Active database not found. Activate a staged dataset or set ACTIVE_DATABASE_PATH.");
+  throw new Error("Active DuckDB database not found. Activate a staged dataset or set ACTIVE_DATABASE_PATH.");
 }
 
-function nonNegativeInteger(name: string, fallback: number) {
+function positiveInteger(name: string, fallback: number) {
   const value = Number(process.env[name] ?? fallback);
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer.`);
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer.`);
   return value;
 }
 
-export function getDb() {
-  const cacheKiB = nonNegativeInteger("SQLITE_CACHE_KIB", 65_536);
-  const mmapBytes = nonNegativeInteger("SQLITE_MMAP_BYTES", 1_073_741_824);
-  const db = new DatabaseSync(getDatabasePath(), { readOnly: true });
-  db.exec(`PRAGMA cache_size = -${cacheKiB}; PRAGMA mmap_size = ${mmapBytes}`);
-  db.enableDefensive(true);
-  const allowed = new Set([
-    constants.SQLITE_SELECT,
-    constants.SQLITE_READ,
-    constants.SQLITE_FUNCTION,
-    constants.SQLITE_RECURSIVE,
-  ]);
-  db.setAuthorizer((action, argument) =>
-    allowed.has(action) ||
-    (action === constants.SQLITE_PRAGMA && ["table_info", "foreign_key_list"].includes(argument ?? ""))
-      ? constants.SQLITE_OK
-      : constants.SQLITE_DENY,
-  );
-  return db;
+export async function getDb(): Promise<DuckDBConnection> {
+  const threads = positiveInteger("DUCKDB_THREADS", 4);
+  const memoryLimit = process.env.DUCKDB_MEMORY_LIMIT ?? "8GB";
+  const instance = await DuckDBInstance.fromCache(getDatabasePath(), {
+    access_mode: "READ_ONLY",
+    threads: String(threads),
+    memory_limit: memoryLimit,
+  });
+  return instance.connect();
+}
+
+export async function queryRows(
+  db: DuckDBConnection,
+  sql: string,
+  values?: unknown[],
+): Promise<Array<Record<string, unknown>>> {
+  return (await readQuery(db, sql, values)).rows;
+}
+
+export async function readQuery(db: DuckDBConnection, sql: string, values?: unknown[]) {
+  const reader = await db.runAndReadAll(sql, values as never[] | undefined);
+  const columns = reader.columnNames();
+  const types = new Map(columns.map((column, index) => [column, String(reader.columnType(index))]));
+  const rows = reader.getRowObjectsJS().map((row) => Object.fromEntries(
+    Object.entries(row).map(([key, value]) => [key, normalizeValue(value, types.get(key))]),
+  ));
+  return { columns, rows };
+}
+
+function normalizeValue(value: unknown, type?: string): unknown {
+  if (typeof value === "bigint") return Number.isSafeInteger(Number(value)) ? Number(value) : value.toString();
+  if (value instanceof Date) return type === "DATE" ? value.toISOString().slice(0, 10) : value.toISOString();
+  if (Array.isArray(value)) return value.map((item) => normalizeValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizeValue(item)]));
+  }
+  return value;
 }

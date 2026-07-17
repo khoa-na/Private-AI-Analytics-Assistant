@@ -1,4 +1,4 @@
-# SQLite analytics playbook
+# DuckDB analytics playbook
 
 Choose the output shape from the question before writing SQL. Do not add a
 `GROUP BY` merely because an aggregate is present.

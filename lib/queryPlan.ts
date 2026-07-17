@@ -22,13 +22,13 @@ export type QueryPlan = {
 
 export type MultiQueryPlan = {
   intent: "multi_query";
-  brief: AnalysisBrief;
+  brief?: AnalysisBrief;
   review?: PlanReview;
   steps: Array<{
     kind: "query";
     purpose: string;
     question: string;
-    brief: AnalysisBrief;
+    brief?: AnalysisBrief;
     sql: string;
   }>;
 };

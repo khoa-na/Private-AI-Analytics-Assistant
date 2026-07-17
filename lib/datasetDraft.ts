@@ -25,7 +25,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function validateEnrichment(value: Record<string, unknown>, profile: DatasetProfile): Enrichment {
+async function validateEnrichment(value: Record<string, unknown>, profile: DatasetProfile): Promise<Enrichment> {
   const tables = new Set(profile.tables.map(({ name }) => name));
   const columns = new Set(
     profile.tables.flatMap((table) => table.columns.map((column) => `${table.name}.${column.name}`)),
@@ -39,7 +39,8 @@ function validateEnrichment(value: Record<string, unknown>, profile: DatasetProf
         )
       : {};
   const rawMeasures = Array.isArray(value.measureCandidates) ? value.measureCandidates : [];
-  const measureCandidates = rawMeasures.flatMap((item) => {
+  const measureCandidates: NonNullable<Enrichment["measureCandidates"]> = [];
+  for (const item of rawMeasures) {
     if (
       !isRecord(item) ||
       typeof item.name !== "string" || !item.name.trim() ||
@@ -49,13 +50,13 @@ function validateEnrichment(value: Record<string, unknown>, profile: DatasetProf
       typeof item.expression !== "string" ||
       !Array.isArray(item.columns) ||
       !item.columns.every((column) => typeof column === "string" && columns.has(column))
-    ) return [];
+    ) continue;
     const definition = {
       baseTable: item.baseTable,
       expression: item.expression,
       columns: item.columns as string[],
     };
-    return [{
+    measureCandidates.push({
       name: item.name,
       description: item.description,
       grain: item.grain,
@@ -65,9 +66,10 @@ function validateEnrichment(value: Record<string, unknown>, profile: DatasetProf
         source: "llm_inference" as const,
         evidence: (item.columns as string[]).length ? item.columns as string[] : [`table:${item.baseTable}`],
       },
-      validation: validateMeasureDefinition(definition, profile),
-    }];
-  }).filter((measure, index, measures) => measures.findIndex((candidate) =>
+      validation: await validateMeasureDefinition(definition, profile),
+    });
+  }
+  const uniqueMeasures = measureCandidates.filter((measure, index, measures) => measures.findIndex((candidate) =>
     candidate.baseTable === measure.baseTable &&
     candidate.expression.replaceAll(/\s+/g, " ").trim().toUpperCase() === measure.expression.replaceAll(/\s+/g, " ").trim().toUpperCase()
   ) === index).slice(0, 10);
@@ -75,7 +77,7 @@ function validateEnrichment(value: Record<string, unknown>, profile: DatasetProf
     ...(typeof value.overview === "string" ? { overview: value.overview } : {}),
     tableDescriptions: descriptions(value.tableDescriptions, tables),
     columnDescriptions: descriptions(value.columnDescriptions, columns),
-    measureCandidates,
+    measureCandidates: uniqueMeasures,
   };
 }
 
@@ -144,13 +146,13 @@ async function generateEnrichment(profile: DatasetProfile): Promise<Enrichment> 
     },
   );
   try {
-    return validateEnrichment(parseLastJsonObject(await request()), profile);
+    return await validateEnrichment(parseLastJsonObject(await request()), profile);
   } catch (error) {
-    return validateEnrichment(parseLastJsonObject(await request(error instanceof Error ? error.message : "Invalid JSON.")), profile);
+    return await validateEnrichment(parseLastJsonObject(await request(error instanceof Error ? error.message : "Invalid JSON.")), profile);
   }
 }
 
-export async function createDatasetDraft(profile: DatasetProfile) {
+export async function createDatasetDraft(profile: DatasetProfile, previousSemantic?: unknown) {
   let enrichment: Enrichment = {};
   let generatedBy: "ai" | "deterministic" = "deterministic";
   let generationError: string | undefined;
@@ -162,10 +164,13 @@ export async function createDatasetDraft(profile: DatasetProfile) {
     generationError = error instanceof Error ? error.message : String(error);
   }
   const catalog = createDatasetCatalog(profile, enrichment, generatedBy);
+  const previous = isRecord(previousSemantic) && previousSemantic.dataset === profile.dataset && previousSemantic.status === "approved"
+    ? previousSemantic
+    : undefined;
   const semantic = {
     schema_version: 1,
     dataset: profile.dataset,
-    dialect: "sqlite",
+    dialect: "duckdb",
     status: "draft",
     generated_by: generatedBy,
     ...(generationError ? { generation_error: generationError } : {}),
@@ -181,7 +186,7 @@ export async function createDatasetDraft(profile: DatasetProfile) {
         },
       }]] : [];
     })),
-    relationships: [],
+    relationships: previous && Array.isArray(previous.relationships) ? previous.relationships : [],
     relationship_candidates: profile.relationshipCandidates.map((relationship) => ({
       ...relationship,
       provenance: {
@@ -189,14 +194,21 @@ export async function createDatasetDraft(profile: DatasetProfile) {
         evidence: [`${relationship.sampledValues} sampled values; ${(relationship.overlap * 100).toFixed(1)}% overlap`],
       },
     })),
-    measures: {},
+    measures: previous && isRecord(previous.measures) ? previous.measures : {},
     measure_candidates: enrichment.measureCandidates ?? [],
     analysis_policy: {
+      ...(previous && isRecord(previous.analysis_policy) ? previous.analysis_policy : {}),
       unconfirmed_semantics: "Ask for clarification; candidates require human review before moving into relationships or measures.",
       ...(profile.analysisHints?.length ? {
         dataset_hints: profile.analysisHints.map((text) => ({
           text,
           provenance: { source: "dataset_manifest", evidence: ["dataset.json analysisHints"] },
+        })),
+      } : {}),
+      ...(profile.clarificationRules?.length ? {
+        clarification_rules: profile.clarificationRules.map((rule) => ({
+          ...rule,
+          provenance: { source: "dataset_manifest", evidence: ["dataset.json clarificationRules"] },
         })),
       } : {}),
     },
@@ -217,13 +229,13 @@ function validProvenance(value: unknown): value is Provenance {
     Array.isArray(value.evidence) && value.evidence.length > 0 && value.evidence.every((item) => typeof item === "string" && item.trim());
 }
 
-export function validateApprovedSemantic(value: unknown, profile: DatasetProfile) {
+export async function validateApprovedSemantic(value: unknown, profile: DatasetProfile) {
   if (!isRecord(value) || value.status !== "approved") {
     throw new Error('Review semantic.json and set "status": "approved" before activation.');
   }
   const structured = value.schema_version === 1;
   if (value.schema_version !== undefined && !structured) throw new Error("Unsupported semantic schema version.");
-  if (structured && (value.dataset !== profile.dataset || value.dialect !== "sqlite")) {
+  if (structured && (value.dataset !== profile.dataset || value.dialect !== "duckdb")) {
     throw new Error("semantic.json dataset or dialect does not match the staged database.");
   }
   const tables = new Map(profile.tables.map((table) => [
@@ -264,7 +276,7 @@ export function validateApprovedSemantic(value: unknown, profile: DatasetProfile
         !measure.columns.every((column) => typeof column === "string") ||
         !validProvenance(measure.provenance) || !isRecord(measure.validation)
       ) throw new Error(`Invalid structured measure definition: ${name}`);
-      const validation = validateMeasureDefinition({
+      const validation = await validateMeasureDefinition({
         baseTable: measure.baseTable,
         expression: measure.expression,
         columns: measure.columns as string[],

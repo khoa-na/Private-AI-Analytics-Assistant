@@ -10,7 +10,47 @@ type Generator = (
   question: string,
   correction?: SqlCorrection,
 ) => Promise<string | IntentResponse>;
-type Runner = (sql: string) => QueryResult;
+type Runner = (sql: string) => QueryResult | Promise<QueryResult>;
+
+export function sqlContractIssues(question: string, sql: string) {
+  const issues: string[] = [];
+  if (/\bround\s*\(/i.test(sql) && !/\b(?:round|decimal|precision)\b|làm tròn|chữ số/i.test(question)) {
+    issues.push("Preserve full numeric precision; rounding was not requested.");
+  }
+  if (/\b(?:change|increase|decrease|growth|mom)\b|thay đổi|tăng|giảm/i.test(question) &&
+    /\//.test(sql) && !/%|\b(?:rate|ratio|percent|percentage|share)\b|tỷ lệ|tỷ trọng|phần trăm/i.test(question)) {
+    issues.push("The question requests an absolute change, not a rate or percentage.");
+  }
+  const invalidAliases = [...sql.matchAll(/\bAS\s+invalid_\w+/gi)];
+  const invalidExpressionIncludesNull = invalidAliases.some(({ index = 0 }) => {
+    if (invalidAliases.length === 1 && !sql.slice(0, index).includes(",")) return /(?<!\bNOT\s)\bIS\s+NULL\b/i.test(sql);
+    let depth = 0;
+    let expressionStart = 0;
+    for (let cursor = index - 1; cursor >= 0; cursor--) {
+      if (sql[cursor] === ")") depth++;
+      else if (sql[cursor] === "(" && depth > 0) depth--;
+      else if (sql[cursor] === "," && depth === 0) {
+        expressionStart = cursor + 1;
+        break;
+      }
+    }
+    const expression = sql.slice(expressionStart, index);
+    return /(?<!\bNOT\s)\bIS\s+NULL\b/i.test(expression);
+  });
+  if (invalidExpressionIncludesNull &&
+    !/(?:count|treat|include).*null.*invalid|null.*(?:counts?|treated?|included?).*invalid|null.*không hợp lệ/i.test(question)) {
+    issues.push("Do not count null values as invalid-domain values unless explicitly requested.");
+  }
+  if (/\b(?:band|bucket)\b|phân nhóm/i.test(question) && /\bCASE\b[\s\S]*?\bELSE\b/i.test(sql) &&
+    !/\bIS\s+NULL\b/i.test(sql) && !/exclude.*(?:null|missing)|loại.*(?:null|thiếu)/i.test(question)) {
+    issues.push("Bucket null source values explicitly; do not let them fall into a numeric ELSE bucket.");
+  }
+  if (/sentinel/i.test(question) && /=\s*-1(?:\s+AND[\s\S]*?=\s*-1){2,}/i.test(sql) &&
+    !/all.*simultaneously|every.*simultaneously|tất cả.*đồng thời/i.test(question)) {
+    issues.push("A row with a sentinel in any audited field must qualify; do not require every field simultaneously.");
+  }
+  return issues;
+}
 
 export async function generateAndRunQuery(
   question: string,
@@ -31,7 +71,7 @@ export async function generateAndRunQuery(
     }
   }
 
-  function runTimed(sql: string, attempt: number) {
+  async function runTimed(sql: string, attempt: number) {
     const started = Date.now();
     try {
       try {
@@ -43,7 +83,7 @@ export async function generateAndRunQuery(
           attempt,
         );
       }
-      return run(sql);
+      return await run(sql);
     } catch (error) {
       throw error instanceof PipelineStageError
         ? error
@@ -82,7 +122,9 @@ export async function generateAndRunQuery(
       return { intent: "refusal" as const, message: privacyRefusal, sqlGenerationMs, queryMs };
     }
     try {
-      const result = runTimed(sql, attempt);
+      const contractIssues = sqlContractIssues(question, sql);
+      if (contractIssues.length) throw new PipelineStageError("quality", contractIssues.join(" "), attempt);
+      const result = await runTimed(sql, attempt);
       const quality = brief
         ? assessResultQuality(result.columns, result.rows, result.truncated, brief)
         : { issues: [], caveats: [] };

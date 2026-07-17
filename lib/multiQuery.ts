@@ -8,11 +8,13 @@ import { profileResult } from "./resultProfile";
 type PlannedStep = MultiQueryPlan["steps"][number];
 
 function runPlannedStep(step: PlannedStep) {
+  if (!step.brief) return generateAndRunQuery(step.question);
+  const brief = step.brief;
   return generateAndRunQuery(
     step.question,
     async (_question, correction) => correction
       ? generateGeneralSql(step.question, correction)
-      : { intent: "query", brief: step.brief, sql: step.sql },
+      : { intent: "query", brief, sql: step.sql },
   );
 }
 
@@ -32,15 +34,19 @@ export async function runMultiQueryPlan(
   let sqlGenerationMs = 0;
   let queryMs = 0;
 
-  for (const step of plan.steps) {
-    const generated = await runStep(step);
+  const generatedSteps = await Promise.all(plan.steps.map(runStep));
+  for (const [index, generated] of generatedSteps.entries()) {
+    const step = plan.steps[index];
     sqlGenerationMs += generated.sqlGenerationMs;
     queryMs += generated.queryMs;
     if (generated.intent !== "query") {
       throw new Error(`Analysis step could not produce one query: ${step.purpose}`);
     }
+    const brief = generated.brief ?? step.brief;
+    if (!brief) throw new Error(`Analysis step returned no executable brief: ${step.purpose}`);
     steps.push({
       ...step,
+      brief,
       ...(generated.sqlAttempts?.length ? { sqlAttempts: generated.sqlAttempts } : {}),
       quality: generated.quality,
       result: generated.result,

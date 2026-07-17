@@ -1,13 +1,13 @@
 # Private AI Analytics Assistant
 
 Portfolio project for an AI engineer: a TypeScript web app that turns business
-questions into safe SQL, executes them on one active SQLite dataset, and
+questions into safe SQL, executes them on one active DuckDB dataset, and
 visualizes grounded results.
 
 ## Stack
 
 - Next.js + TypeScript
-- SQLite with Node's built-in `node:sqlite`
+- DuckDB with the official `@duckdb/node-api` client
 - OpenAI-compatible LLM API
 - `node-sql-parser` for read-only SQL validation
 - Recharts for visualization
@@ -28,10 +28,10 @@ visualizes grounded results.
    npm install
    ```
 
-2. Import a SQLite file or a directory of CSV/TSV files:
+2. Import a DuckDB file or a directory of CSV/TSV/Parquet files:
 
    ```bash
-   npm run dataset:import -- /path/to/database.sqlite
+   npm run dataset:import -- /path/to/database.duckdb
    npm run dataset:import -- /path/to/csv-directory --name=sales
    npm run dataset:import -- /path/to/private-data --no-ai
    ```
@@ -52,20 +52,18 @@ visualizes grounded results.
        "name": "flights",
        "format": "csv",
        "sources": ["*.csv"],
-       "sourceColumn": "source_file",
-       "indexes": [["flight_date"], ["carrier", "flight_date"]]
+       "sourceColumn": "source_file"
      }]
    }
    ```
 
-   After changing indexes or AI configuration, refresh metadata without
-   importing the raw files again:
+   After changing the manifest or AI configuration, rebuild the staged bundle:
 
    ```bash
    npm run dataset:import -- /path/to/dataset-directory --refresh
    ```
 
-   The command stages `database.sqlite`, a privacy-filtered `dataset-profile.json`,
+   The command stages `database.duckdb`, a privacy-filtered `dataset-profile.json`,
    full `dataset-catalog.json` and `dataset.md`, compact `dataset.runtime.md`,
    `semantic.json`, and `bundle-manifest.json` under `data/staging/<name>`.
    The bundle manifest fingerprints the database schema and every generated
@@ -80,7 +78,7 @@ visualizes grounded results.
    npm run dataset:review -- <name> --no-ai
    ```
 
-   Review runs SQLite integrity checks, verifies inferred relationships against
+   Review opens DuckDB read-only, verifies inferred relationships against
    the full database, revalidates measure SQL, writes `review-report.json`, and
    seals the reviewed semantic fingerprint. The reviewer receives anonymous
    measure IDs, SQL, columns, and evidence IDs; it never receives draft names,
@@ -97,18 +95,17 @@ visualizes grounded results.
    ```
 
    Activation requires an `approved` bundle, validates every fingerprint,
-   runs SQLite `quick_check`, then moves
+   verifies that DuckDB opens and its catalog is readable, then moves
    the complete bundle under `data/active/`. Interrupted `active.next` and
    `active.previous` swaps are recovered on the next activation before the bundle
    transitions to `active`. The old active
-   bundle is removed, avoiding a second copy of large databases. Existing installations
-   using `data/active.db`, `data/dataset.md`, and `data/semantic.json` remain supported.
+   bundle is removed, avoiding a second copy of large databases.
    Remove old `ACTIVE_*` dataset overrides from `.env.local`, or point them at this bundle.
 
    The database can also live elsewhere:
 
    ```bash
-   ACTIVE_DATABASE_PATH=/path/to/database.sqlite
+   ACTIVE_DATABASE_PATH=/path/to/database.duckdb
    ```
 
    For the legacy Olist-specific importer, put the CSV files in
@@ -118,7 +115,7 @@ visualizes grounded results.
    npm run build-db
    ```
 
-   This creates `data/olist/database.sqlite` without changing the active dataset.
+   This creates `data/olist/database.duckdb` without changing the active dataset.
 
 3. Add local environment variables:
 

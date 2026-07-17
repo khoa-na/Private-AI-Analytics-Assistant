@@ -119,5 +119,11 @@ assert.match(
   )?.analysis.caveats.join(" ") ?? "",
   /partial or incomplete/,
 );
+const historical = deterministicAnalysis(
+  "State that this dataset is historical and not current.",
+  "SELECT 1 AS days_old",
+  profileResult([{ days_old: 1 }]),
+);
+assert.match(historical?.analysis.summary ?? "", /historical and not current/);
 
 console.log("llmAnalysis tests passed");

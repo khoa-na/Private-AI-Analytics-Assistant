@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
-import { writeDatasetBundle } from "../lib/datasetBundle";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { validateStagedBundle, writeDatasetBundle } from "../lib/datasetBundle";
 import { createDatasetDraft } from "../lib/datasetDraft";
 import { refreshDataset, stageDataset } from "../lib/datasetImport";
 
@@ -10,20 +11,30 @@ const name = process.argv.find((argument) => argument.startsWith("--name="))?.sl
 const noAi = process.argv.includes("--no-ai");
 const refresh = process.argv.includes("--refresh");
 if (!source) {
-  console.error("Usage: npm run dataset:import -- <sqlite-file|dataset-directory> [--name=dataset-name] [--no-ai] [--refresh]");
+  console.error("Usage: npm run dataset:import -- <duckdb-file|CSV/TSV/Parquet-directory> [--name=dataset-name] [--no-ai] [--refresh]");
   process.exit(1);
 }
 
 try {
   const { directory, profile } = refresh
-    ? refreshDataset(source, undefined, name)
+    ? await refreshDataset(source, undefined, name)
     : await stageDataset(source, undefined, name);
   if (noAi) {
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_MODEL;
   }
-  const draft = await createDatasetDraft(profile);
-  writeDatasetBundle(directory, {
+  let previousSemantic: unknown;
+  const active = resolve("data", "active");
+  if (existsSync(join(active, "semantic.json"))) {
+    try {
+      const { manifest } = await validateStagedBundle(active, profile.dataset);
+      if (manifest.state === "active") previousSemantic = JSON.parse(readFileSync(join(active, "semantic.json"), "utf8"));
+    } catch (error) {
+      console.warn(`Existing active semantics were not reused: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const draft = await createDatasetDraft(profile, previousSemantic);
+  await writeDatasetBundle(directory, {
     "dataset-profile.json": `${JSON.stringify(profile, null, 2)}\n`,
     "dataset-catalog.json": draft.catalogJson,
     "dataset.md": draft.markdown,

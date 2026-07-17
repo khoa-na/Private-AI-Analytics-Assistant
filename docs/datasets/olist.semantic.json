@@ -1,6 +1,6 @@
 {
   "dataset": "olist",
-  "dialect": "sqlite",
+  "dialect": "duckdb",
   "analysis_policy": {
     "forecasting": "unsupported because the dataset contains historical facts and defines no forecasting method",
     "unavailable_product_names": "unsupported; product IDs and translated categories may be offered as alternatives",

@@ -6,8 +6,8 @@ This is an anonymized Brazilian ecommerce dataset. Product titles are not
 available; `product_id` identifies an individual product and category names are
 the most readable product labels.
 
-All CSV columns were imported as SQLite `TEXT`. Cast numeric values before
-math. Missing CSV values are usually empty strings.
+CSV columns are inferred by DuckDB. Use the active schema types and cast only
+when a source column was inferred as text. Missing CSV values are usually null.
 
 ## Table grain
 

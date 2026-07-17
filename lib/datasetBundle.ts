@@ -1,15 +1,9 @@
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DuckDBInstance } from "@duckdb/node-api";
 import type { DatasetProfile } from "./datasetImport";
+import { queryRows } from "./db";
 
 const ARTIFACT_NAMES = [
   "dataset-profile.json",
@@ -18,6 +12,7 @@ const ARTIFACT_NAMES = [
   "dataset.runtime.md",
   "semantic.json",
 ] as const;
+export const DATABASE_NAME = "database.duckdb";
 export const BUNDLE_MANIFEST_NAME = "bundle-manifest.json";
 export const REVIEW_REPORT_NAME = "review-report.json";
 export const BUNDLE_STATES = ["draft", "approved", "rejected", "active"] as const;
@@ -31,13 +26,9 @@ export type BundleManifest = {
   state: BundleState;
   created_at: string;
   sealed_at?: string;
-  database: {
-    bytes: number;
-    mtime_ms: number;
-    schema_sha256: string;
-  };
+  database: { bytes: number; mtime_ms: number; schema_sha256: string };
   artifacts: Record<ArtifactName, ArtifactFingerprint>;
-  source: { kind: "directory" | "sqlite"; manifest_sha256?: string };
+  source: { kind: "directory" | "duckdb"; manifest_sha256?: string };
   generation: { generated_by: "ai" | "deterministic"; model?: string; prompt_version: 1 };
   review?: {
     decision: "approved" | "rejected";
@@ -61,28 +52,32 @@ function fileFingerprint(path: string): ArtifactFingerprint {
   return { bytes: content.byteLength, sha256: sha256(content) };
 }
 
-export function schemaFingerprint(databasePath: string) {
-  const db = new DatabaseSync(databasePath, { readOnly: true });
+export async function schemaFingerprint(databasePath: string) {
+  const instance = await DuckDBInstance.create(databasePath, { access_mode: "READ_ONLY" });
+  const db = await instance.connect();
   try {
-    const schema = db.prepare(
-      "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
-    ).all();
-    const settings = {
-      applicationId: (db.prepare("PRAGMA application_id").get() as Record<string, unknown> | undefined),
-      userVersion: (db.prepare("PRAGMA user_version").get() as Record<string, unknown> | undefined),
-    };
-    return sha256(JSON.stringify({ schema, settings }));
+    const tables = await queryRows(db,
+      "SELECT schema_name, table_name, sql FROM duckdb_tables() WHERE internal = false ORDER BY schema_name, table_name",
+    );
+    const indexes = await queryRows(db,
+      "SELECT schema_name, table_name, index_name, sql FROM duckdb_indexes() ORDER BY schema_name, table_name, index_name",
+    );
+    const constraints = await queryRows(db,
+      "SELECT schema_name, table_name, constraint_type, constraint_text FROM duckdb_constraints() ORDER BY schema_name, table_name, constraint_index",
+    );
+    return sha256(JSON.stringify({ tables, indexes, constraints }));
   } finally {
-    db.close();
+    db.closeSync();
+    instance.closeSync();
   }
 }
 
-function databaseFingerprint(path: string) {
+async function databaseFingerprint(path: string) {
   const stat = statSync(path);
   return {
     bytes: stat.size,
     mtime_ms: Math.trunc(stat.mtimeMs),
-    schema_sha256: schemaFingerprint(path),
+    schema_sha256: await schemaFingerprint(path),
   };
 }
 
@@ -105,15 +100,10 @@ function writeManifest(directory: string, manifest: BundleManifest) {
   atomicWrite(join(directory, BUNDLE_MANIFEST_NAME), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-export function writeDatasetBundle(
+export async function writeDatasetBundle(
   directory: string,
   files: Record<ArtifactName, string>,
-  metadata: {
-    dataset: string;
-    sourcePath: string;
-    generatedBy: "ai" | "deterministic";
-    model?: string;
-  },
+  metadata: { dataset: string; sourcePath: string; generatedBy: "ai" | "deterministic"; model?: string },
 ) {
   const pending = ARTIFACT_NAMES.map((name) => ({
     target: join(directory, name),
@@ -130,18 +120,16 @@ export function writeDatasetBundle(
     for (const file of pending) rmSync(file.temporary, { force: true });
   }
 
-  const sourceManifest = statSync(metadata.sourcePath).isDirectory()
-    ? join(metadata.sourcePath, "dataset.json")
-    : undefined;
+  const sourceManifest = statSync(metadata.sourcePath).isDirectory() ? join(metadata.sourcePath, "dataset.json") : undefined;
   const manifest: BundleManifest = {
     schema_version: 1,
     dataset: metadata.dataset,
     state: "draft",
     created_at: new Date().toISOString(),
-    database: databaseFingerprint(join(directory, "database.sqlite")),
+    database: await databaseFingerprint(join(directory, DATABASE_NAME)),
     artifacts: artifactFingerprints(directory),
     source: {
-      kind: sourceManifest ? "directory" : "sqlite",
+      kind: sourceManifest ? "directory" : "duckdb",
       ...(sourceManifest && existsSync(sourceManifest) ? { manifest_sha256: fileFingerprint(sourceManifest).sha256 } : {}),
     },
     generation: {
@@ -180,14 +168,14 @@ function sameFingerprint(
   return Boolean(right) && Object.keys(left).every((key) => left[key as keyof typeof left] === right?.[key as keyof typeof right]);
 }
 
-export function validateStagedBundle(directory: string, expectedDataset: string) {
+export async function validateStagedBundle(directory: string, expectedDataset: string) {
   const manifest = readBundleManifest(directory);
   if (manifest.dataset !== expectedDataset) {
     throw new Error(`Bundle dataset mismatch: expected ${expectedDataset}, found ${manifest.dataset}.`);
   }
-  const databasePath = join(directory, "database.sqlite");
-  if (!existsSync(databasePath) || !sameFingerprint(databaseFingerprint(databasePath), manifest.database)) {
-    throw new Error("database.sqlite no longer matches bundle-manifest.json; re-run dataset import or refresh.");
+  const databasePath = join(directory, DATABASE_NAME);
+  if (!existsSync(databasePath) || !sameFingerprint(await databaseFingerprint(databasePath), manifest.database)) {
+    throw new Error(`${DATABASE_NAME} no longer matches bundle-manifest.json; re-run dataset import or refresh.`);
   }
   for (const name of ARTIFACT_NAMES) {
     const path = join(directory, name);
@@ -209,15 +197,14 @@ export function validateStagedBundle(directory: string, expectedDataset: string)
   return { manifest, profile: { ...profile, databasePath } };
 }
 
-export function quickCheckDatabase(databasePath: string) {
-  const db = new DatabaseSync(databasePath, { readOnly: true });
+export async function quickCheckDatabase(databasePath: string) {
+  const instance = await DuckDBInstance.create(databasePath, { access_mode: "READ_ONLY" });
+  const db = await instance.connect();
   try {
-    const results = db.prepare("PRAGMA quick_check").all() as Array<Record<string, unknown>>;
-    if (results.length !== 1 || !Object.values(results[0]).includes("ok")) {
-      throw new Error("database.sqlite failed PRAGMA quick_check.");
-    }
+    await queryRows(db, "SELECT COUNT(*) AS table_count FROM information_schema.tables");
   } finally {
-    db.close();
+    db.closeSync();
+    instance.closeSync();
   }
 }
 
@@ -235,12 +222,8 @@ export function transitionBundleState(
   review?: { reviewer: "ai" | "deterministic"; model?: string; reviewedAt?: string },
 ) {
   const manifest = readBundleManifest(directory);
-  if (manifest.state !== expected) {
-    throw new Error(`Bundle state mismatch: expected ${expected}, found ${manifest.state}.`);
-  }
-  if (!TRANSITIONS[manifest.state].includes(next)) {
-    throw new Error(`Invalid bundle state transition: ${manifest.state} -> ${next}.`);
-  }
+  if (manifest.state !== expected) throw new Error(`Bundle state mismatch: expected ${expected}, found ${manifest.state}.`);
+  if (!TRANSITIONS[manifest.state].includes(next)) throw new Error(`Invalid bundle state transition: ${manifest.state} -> ${next}.`);
   const reviewDecision = next === "approved" || next === "rejected";
   if (reviewDecision && !review) throw new Error(`Bundle transition to ${next} requires review metadata.`);
   if (next === "active" && manifest.review?.decision !== "approved") {
@@ -250,10 +233,7 @@ export function transitionBundleState(
     ...manifest,
     state: next,
     ...(reviewDecision ? {
-      artifacts: {
-        ...manifest.artifacts,
-        "semantic.json": fileFingerprint(join(directory, "semantic.json")),
-      },
+      artifacts: { ...manifest.artifacts, "semantic.json": fileFingerprint(join(directory, "semantic.json")) },
       review: {
         decision: next,
         reviewed_at: review?.reviewedAt ?? new Date().toISOString(),

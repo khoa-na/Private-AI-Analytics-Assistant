@@ -27,7 +27,7 @@ The repository already provides the execution foundation:
 | Schema extraction | Implemented |
 | English and Vietnamese text-to-SQL | Implemented |
 | Read-only SQL validation | Implemented |
-| SQLite execution | Implemented |
+| DuckDB execution | Implemented |
 | Default result limit | Implemented |
 | Result table | Implemented |
 | Basic bar and line charts | Implemented |
@@ -64,12 +64,12 @@ without removing the actual scaling constraints.
 Scale in this order:
 
 1. Keep the local-first TypeScript application while usage is single-node.
-2. Move long SQLite queries, imports, and reviews to separate TypeScript worker
+2. Move long DuckDB queries, imports, and reviews to separate TypeScript worker
    processes when concurrent requests begin blocking the web process.
 3. Move job and dataset metadata to PostgreSQL and immutable bundles to object
    storage when multiple application instances need shared state.
-4. Replace SQLite with an analytical database or warehouse when measured query
-   latency, concurrency, or dataset size requires it.
+4. Move from embedded DuckDB to a shared warehouse only when measured query
+   concurrency or multi-node deployment requires it.
 5. Add a Python worker only for Python-native workloads such as forecasting,
    statistical modeling, notebooks, or machine learning. Do not rewrite the
    Next.js application solely to introduce Python.
@@ -88,7 +88,7 @@ flowchart LR
     R --> UI["Answer, chart, SQL, and table"]
 
     S["Database schema"] --> G
-    D["SQLite"] --> Q
+    D["DuckDB"] --> Q
     P --> O["Evaluation and telemetry"]
     N --> O
 ```
@@ -100,12 +100,12 @@ have separate prompts and output contracts.
 
 ### Goal
 
-Turn an operator-provided SQLite database or CSV/TSV directory into one
+Turn an operator-provided DuckDB database or CSV/TSV/Parquet directory into one
 integrity-checked active analytical dataset with inspectable context.
 
 ### Implemented flow
 
-1. `dataset:import` builds SQLite, profiles schema and data, and writes a
+1. `dataset:import` builds DuckDB with native bulk scans, profiles schema and data, and writes a
    versioned semantic draft with provenance.
 2. `dataset:review` validates database integrity, relationships, measures, and
    evidence through a blind reviewer plus deterministic policy gates.
@@ -123,13 +123,13 @@ For the first analyst version, one request follows this bounded sequence:
 1. Validate the question.
 2. Generate one read-only SQL statement using the current schema.
 3. Parse and validate the SQL.
-4. Execute it against SQLite.
+4. Execute it against DuckDB.
 5. Build a compact result profile.
 6. Ask the model to interpret only that profile and the returned rows.
 7. Validate the structured analysis response.
 8. Return the answer, evidence, chart specification, SQL, and rows.
 
-If SQLite rejects generated SQL, the system may make one repair attempt using
+If DuckDB rejects generated SQL, the system may make one repair attempt using
 the error message and schema. It must not retry indefinitely.
 
 ## Response contract

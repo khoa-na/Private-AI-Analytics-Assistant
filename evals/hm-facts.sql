@@ -56,7 +56,7 @@ WITH daily AS (
   GROUP BY t_dat
 )
 SELECT
-  substr(t_dat, 1, 7) AS month,
+  strftime(t_dat, '%Y-%m') AS month,
   SUM(transaction_rows) AS transaction_rows,
   SUM(recorded_price_sum) AS recorded_price_sum
 FROM daily
@@ -236,7 +236,7 @@ WITH daily AS (
   GROUP BY t_dat
 )
 SELECT
-  strftime('%w', t_dat) AS weekday,
+  strftime(t_dat, '%w') AS weekday,
   COUNT(*) AS weekday_days,
   AVG(transaction_rows) AS avg_transaction_rows
 FROM daily
@@ -277,7 +277,7 @@ FROM quartiles;
 
 SELECT
   MAX(t_dat) AS last_date,
-  CAST(julianday('2026-07-15') - julianday(MAX(t_dat)) AS INTEGER) AS days_old
+  date_diff('day', MAX(t_dat), DATE '2026-07-15') AS days_old
 FROM transactions;
 
 WITH daily AS (
@@ -334,7 +334,7 @@ SELECT
   (SELECT SUM(article_id IS NULL) FROM transactions) AS missing_article_ids,
   (SELECT SUM(sales_channel_id IS NULL OR sales_channel_id NOT IN (1, 2))
     FROM transactions) AS invalid_channel_rows,
-  (SELECT SUM(t_dat IS NULL OR t_dat NOT GLOB '????-??-??' OR date(t_dat) IS NULL)
+  (SELECT SUM(t_dat IS NULL OR try_cast(t_dat AS DATE) IS NULL)
     FROM transactions) AS malformed_date_rows,
   (SELECT SUM(FN IS NOT NULL AND FN NOT IN (0, 1)) FROM customers) AS invalid_fn_rows,
   (SELECT SUM(Active IS NOT NULL AND Active NOT IN (0, 1))
@@ -445,7 +445,7 @@ FROM articles
 GROUP BY prod_name
 ORDER BY catalog_articles DESC, prod_name;
 
-SELECT substr(t_dat, 1, 7) AS month, COUNT(*) AS transaction_rows
+SELECT strftime(t_dat, '%Y-%m') AS month, COUNT(*) AS transaction_rows
 FROM transactions
 WHERE t_dat BETWEEN '2021-01-01' AND '2021-12-31'
 GROUP BY month

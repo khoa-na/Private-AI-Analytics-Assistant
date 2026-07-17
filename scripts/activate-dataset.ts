@@ -5,7 +5,7 @@ import {
   rmSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { quickCheckDatabase, transitionBundleState, validateStagedBundle } from "../lib/datasetBundle";
+import { DATABASE_NAME, quickCheckDatabase, transitionBundleState, validateStagedBundle } from "../lib/datasetBundle";
 import { validateApprovedSemantic } from "../lib/datasetDraft";
 import { datasetSlug } from "../lib/datasetImport";
 
@@ -23,10 +23,10 @@ export function recoverActivation(source: string, next: string, active: string, 
   return false;
 }
 
-export function activateDataset(requested: string, data = resolve("data")) {
+export async function activateDataset(requested: string, data = resolve("data")) {
   const name = datasetSlug(requested);
   const source = join(data, "staging", name);
-  const database = join(source, "database.sqlite");
+  const database = join(source, DATABASE_NAME);
   const runtimeMarkdown = join(source, "dataset.runtime.md");
   const semanticPath = join(source, "semantic.json");
   const next = join(data, "active.next");
@@ -34,7 +34,7 @@ export function activateDataset(requested: string, data = resolve("data")) {
   const previous = join(data, "active.previous");
 
   if (recoverActivation(source, next, active, previous)) {
-    const { manifest } = validateStagedBundle(active, name);
+    const { manifest } = await validateStagedBundle(active, name);
     if (manifest.state === "approved") transitionBundleState(active, "approved", "active");
     else if (manifest.state !== "active") {
       throw new Error(`Cannot recover activation from bundle state ${manifest.state}.`);
@@ -43,17 +43,17 @@ export function activateDataset(requested: string, data = resolve("data")) {
     console.log(`Recovered completed activation: ${name}`);
     return;
   }
-  const { manifest, profile } = validateStagedBundle(source, name);
+  const { manifest, profile } = await validateStagedBundle(source, name);
   if (manifest.state !== "approved") {
     throw new Error(`Dataset must be approved before activation; current bundle state is ${manifest.state}.`);
   }
   const semantic = JSON.parse(readFileSync(semanticPath, "utf8")) as Record<string, unknown>;
   if (semantic.schema_version !== 1) throw new Error("Activation requires semantic.json schema_version 1.");
-  validateApprovedSemantic(semantic, profile);
+  await validateApprovedSemantic(semantic, profile);
   if (Buffer.byteLength(`${readFileSync(runtimeMarkdown, "utf8")}\n${readFileSync(semanticPath, "utf8")}`) > 12_000) {
     throw new Error("Dataset guide is larger than the 12 KB runtime limit.");
   }
-  quickCheckDatabase(database);
+  await quickCheckDatabase(database);
 
   renameSync(source, next);
   try {
@@ -74,7 +74,7 @@ export function activateDataset(requested: string, data = resolve("data")) {
   }
 
   console.log(`Activated dataset: ${name}`);
-  console.log(`Database: ${join(active, "database.sqlite")}`);
+  console.log(`Database: ${join(active, DATABASE_NAME)}`);
   if (existsSync(".env.local")) {
     const environment = readFileSync(".env.local", "utf8");
     const overrides = [
@@ -94,7 +94,7 @@ if (import.meta.main) {
     process.exit(1);
   }
   try {
-    activateDataset(requested);
+    await activateDataset(requested);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
