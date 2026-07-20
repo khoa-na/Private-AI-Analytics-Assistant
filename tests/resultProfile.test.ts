@@ -81,5 +81,18 @@ assert.deepEqual(
   ).issues,
   ["Brief requires exactly 3 rows; SQL returned 2."],
 );
+assert.deepEqual(
+  assessResultQuality(
+    ["weekday", "weekday_days", "avg_transaction_rows"],
+    [{ weekday: "0", weekday_days: "Sunday", avg_transaction_rows: 10 }],
+    false,
+    {
+      ...brief,
+      dimensions: ["weekday"],
+      outputColumns: ["weekday", "weekday_days", "avg_transaction_rows"],
+    },
+  ).issues,
+  ["weekday_days must be a non-negative numeric metric."],
+);
 
 console.log("resultProfile tests passed");

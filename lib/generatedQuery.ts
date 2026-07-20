@@ -5,12 +5,47 @@ import { PipelineStageError } from "./pipelineError";
 import { privacyRefusalForSql } from "./privacySafety";
 import { assessResultQuality } from "./resultProfile";
 import { validateReadOnlySql } from "./sqlSafety";
+import type { Row } from "./analyticsTypes";
 
 type Generator = (
   question: string,
   correction?: SqlCorrection,
 ) => Promise<string | IntentResponse>;
 type Runner = (sql: string) => QueryResult | Promise<QueryResult>;
+
+export function normalizeSqlAliases(sql: string) {
+  if (!/\b(?:FROM|JOIN)\s+[A-Za-z_][\w."]*\s+(?:AS\s+)?at\b/i.test(sql)) return sql;
+  return sql
+    .replace(/(\b(?:FROM|JOIN)\s+[A-Za-z_][\w."]*\s+(?:AS\s+)?)at\b/gi, "$1at_alias")
+    .replace(/\bat\./gi, "at_alias.");
+}
+
+export function normalizeMultiplicityCollections(question: string, sql: string) {
+  if (!/\bcodes_with_multiple_names\b/i.test(question) ||
+    !/\bnames_with_multiple_codes\b/i.test(question) ||
+    /\b(?:list|array|collect)\b|danh sách|liệt kê/i.test(question)) return sql;
+  return sql
+    .replace(/\bLIST\s*\(\s*([^)]+?)\s*\)/gi, "COUNT(DISTINCT $1)")
+    .replace(/,\s*\[\]\s*\)/g, ", 0)");
+}
+
+export function pivotNamedScalarMetrics(result: QueryResult, requiredColumns: string[]) {
+  if (result.rows.length < 2 || !requiredColumns.length) return result;
+  const dimensions = result.columns.filter((column) =>
+    result.rows.every((row) => typeof row[column] === "string"));
+  const metrics = result.columns.filter((column) =>
+    result.rows.every((row) => typeof row[column] === "number"));
+  if (dimensions.length !== 1 || metrics.length !== 1) return result;
+  const [dimension] = dimensions;
+  const [metric] = metrics;
+  const row = Object.fromEntries(requiredColumns.map((column) => {
+    const source = result.rows.find((item) =>
+      column.toLowerCase().includes(String(item[dimension]).toLowerCase()));
+    return [column, source?.[metric]];
+  }));
+  if (Object.values(row).some((value) => typeof value !== "number")) return result;
+  return { ...result, columns: requiredColumns, rows: [row as Row] };
+}
 
 export function alignExplicitOutputColumns(outputColumns: string[], requiredColumns: string[]) {
   const aligned = [...outputColumns];
@@ -24,12 +59,45 @@ export function alignExplicitOutputColumns(outputColumns: string[], requiredColu
   return [...new Set(aligned)];
 }
 
+export function alignResultColumns(result: QueryResult, requiredColumns: string[]) {
+  const renames = new Map(requiredColumns.flatMap((required) => {
+    const source = [`${required}_label`, `${required}_name`, "label"]
+      .find((candidate) => result.columns.includes(candidate) && !requiredColumns.includes(candidate));
+    return source ? [[source, required] as const] : [];
+  }));
+  if (!renames.size) return result;
+  return {
+    ...result,
+    columns: result.columns.map((column) => renames.get(column) ?? column),
+    rows: result.rows.map((row) => Object.fromEntries(
+      Object.entries(row).map(([column, value]) => [renames.get(column) ?? column, value]),
+    )),
+  };
+}
+
+export function normalizeDerivedMetrics(result: QueryResult) {
+  if (!result.columns.includes("absolute_gap")) return result;
+  const inputs = result.columns.filter((column) => column !== "absolute_gap");
+  if (inputs.length !== 2) return result;
+  const rows = result.rows.map((row) => {
+    const [left, right] = inputs.map((column) => row[column]);
+    return typeof left === "number" && typeof right === "number"
+      ? { ...row, absolute_gap: Math.abs(left - right) }
+      : row;
+  });
+  return { ...result, rows };
+}
+
 export function explicitResultContract(question: string) {
   const requiredColumns = new Set<string>();
   function addColumns(clause: string) {
     const first = clause.match(/^\s*([A-Za-z][A-Za-z0-9_]*)\s*,/i)?.[1];
     if (first) requiredColumns.add(first);
-    for (const column of clause.match(/\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b/g) ?? []) {
+    for (const alias of clause.matchAll(/\bAS\s+([A-Za-z][A-Za-z0-9_]*)\b/gi)) {
+      requiredColumns.add(alias[1]);
+    }
+    const outputText = clause.replace(/\([^()]*\)/g, "");
+    for (const column of outputText.match(/\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b/g) ?? []) {
       requiredColumns.add(column);
     }
   }
@@ -49,14 +117,46 @@ export function explicitResultContract(question: string) {
   const count = question.match(
     /(?:(?:\bexactly|đúng)\s+|\blong-form\s+)(\d+)\s+(?:rows?|mappings?|mapping|dòng)/i,
   )?.[1];
+  const scalarMetrics = requiredColumns.size > 1 &&
+    [...requiredColumns].every((column) =>
+      /(?:_rows|_count|_days|_sum|_avg|_average|_gap|^p\d+$|^median$|^iqr$)$/i.test(column));
   return {
     requiredColumns: [...requiredColumns],
-    ...(count ? { expectedRowCount: Number(count) } : {}),
+    ...(count ? { expectedRowCount: Number(count) } : scalarMetrics ? { expectedRowCount: 1 } : {}),
   };
 }
 
 export function sqlContractIssues(question: string, sql: string) {
   const issues: string[] = [];
+  if (/\b(?:FROM|JOIN)\s+[A-Za-z_][\w."]*\s+(?:AS\s+)?(?:at)\b/i.test(sql)) {
+    issues.push("Use a non-reserved table alias; AT is a SQL keyword.");
+  }
+  const requestedPreAggregation = question.match(
+    /(?:aggregate|pre-aggregate|group|tổng hợp)\s+(?:by|theo)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:first|before|trước)/i,
+  )?.[1];
+  if (requestedPreAggregation &&
+    !new RegExp(`\\bGROUP\\s+BY\\b[^;]*\\b${requestedPreAggregation}\\b`, "i").test(sql)) {
+    issues.push(`Pre-aggregate by ${requestedPreAggregation} before the later transformation or join.`);
+  }
+  if (/\bnearest-rank\b/i.test(question) &&
+    (/\bPERCENTILE_CONT\s*\(/i.test(sql) || /\bFLOOR\s*\(/i.test(sql) ||
+      /\(\s*\w+\s*\+\s*1\s*\)/i.test(sql))) {
+    issues.push("Nearest-rank percentiles use rank CEIL(p * n), without interpolation or n + 1.");
+  }
+  if (/\bcodes_with_multiple_names\b/i.test(question) &&
+    /\bnames_with_multiple_codes\b/i.test(question) &&
+    /\bWHERE\b[^;]*\bOR\b/i.test(sql) &&
+    /\bCOUNT\s*\(\s*DISTINCT\s+\w+\s*\)\s+AS\s+codes_with_multiple_names\b/i.test(sql) &&
+    /\bCOUNT\s*\(\s*DISTINCT\s+\w+\s*\)\s+AS\s+names_with_multiple_codes\b/i.test(sql)) {
+    issues.push("Count each direction with its own multiplicity condition; a shared OR filter contaminates both mapping metrics.");
+  }
+  if (/\bcodes_with_multiple_names\b/i.test(question) &&
+    /\bnames_with_multiple_codes\b/i.test(question) &&
+    (sql.match(/\bLEFT\s+JOIN\b/gi)?.length ?? 0) >= 2 &&
+    /\bSUM\s*\(\s*CASE\s+WHEN\s+\w+\.num_names\b/i.test(sql) &&
+    /\bSUM\s*\(\s*CASE\s+WHEN\s+\w+\.num_codes\b/i.test(sql)) {
+    issues.push("Aggregate code-side and name-side multiplicity to the mapping grain before joining them; joining both detail sets by mapping multiplies rows.");
+  }
   if (/\b(?:list|array_agg|string_agg)\s*\(/i.test(sql) &&
     !/\b(?:list|array|collect)\b|danh sách|liệt kê/i.test(question)) {
     issues.push("Collection aggregation was not requested; return scalar metrics at the declared grain.");
@@ -159,7 +259,7 @@ export async function generateAndRunQuery(
 
   const sqlAttempts: Array<{ attempt: number; sql: string; error: string }> = [];
   let correction: SqlCorrection | undefined;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
     let generated: Awaited<ReturnType<Generator>>;
     try {
       generated = await generateTimed(correction);
@@ -169,11 +269,11 @@ export async function generateAndRunQuery(
     }
     let sql: string;
     if (typeof generated === "string") {
-      sql = generated;
+      sql = normalizeMultiplicityCollections(question, normalizeSqlAliases(generated));
     } else if (generated.intent === "query") {
       brief = generated.brief;
       review = generated.review;
-      sql = generated.sql;
+      sql = normalizeMultiplicityCollections(question, normalizeSqlAliases(generated.sql));
     } else {
       return { ...generated, sqlGenerationMs, queryMs };
     }
@@ -204,7 +304,12 @@ export async function generateAndRunQuery(
       }
       const contractIssues = sqlContractIssues(question, sql);
       if (contractIssues.length) throw new PipelineStageError("quality", contractIssues.join(" "), attempt);
-      const result = await runTimed(sql, attempt);
+      let result = await runTimed(sql, attempt);
+      result = alignResultColumns(result, requestContract.requiredColumns);
+      result = normalizeDerivedMetrics(result);
+      if (!brief && requestContract.expectedRowCount === 1) {
+        result = pivotNamedScalarMetrics(result, requestContract.requiredColumns);
+      }
       const quality = brief
         ? assessResultQuality(result.columns, result.rows, result.truncated, brief)
         : { issues: [], caveats: [] };
@@ -240,7 +345,10 @@ export async function generateAndRunQuery(
     } catch (error) {
       const message = error instanceof Error ? error.message : "Query failed.";
       sqlAttempts.push({ attempt, sql, error: message });
-      if (/Database not found/i.test(message) || attempt === 2) {
+      const repairIntroducedExecutionError = attempt === 2 &&
+        /^\[quality:1\]/.test(sqlAttempts[0]?.error ?? "") &&
+        /^\[execution:2\]/.test(message);
+      if (/Database not found/i.test(message) || attempt === 3 || (attempt === 2 && !repairIntroducedExecutionError)) {
         if (error instanceof PipelineStageError) error.sqlAttempts = sqlAttempts;
         throw error;
       }
@@ -248,7 +356,23 @@ export async function generateAndRunQuery(
         sql,
         error: message,
         attempt: attempt + 1,
-        ...(brief ? { brief } : {}),
+        ...(brief
+          ? { brief }
+          : requestContract.expectedRowCount !== undefined && requestContract.requiredColumns.length
+            ? {
+                brief: {
+                  objective: question,
+                  metric: requestContract.requiredColumns.join(", "),
+                  grain: requestContract.expectedRowCount === 1
+                    ? "one scalar row"
+                    : `exactly ${requestContract.expectedRowCount} rows`,
+                  dimensions: requestContract.requiredColumns.filter((column) =>
+                    !/(?:_count|_rows|_days|_sum|_avg|_average|_gap|^p\d+$|^median$|^iqr$)|^(?:codes|names)_with_/i.test(column)),
+                  outputColumns: requestContract.requiredColumns,
+                  filters: [],
+                },
+              }
+            : {}),
       };
     }
   }

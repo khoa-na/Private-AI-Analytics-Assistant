@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { explicitResultContract, generateAndRunQuery, sqlContractIssues } from "../lib/generatedQuery";
+import { alignResultColumns, explicitResultContract, generateAndRunQuery, normalizeDerivedMetrics, normalizeMultiplicityCollections, normalizeSqlAliases, pivotNamedScalarMetrics, sqlContractIssues } from "../lib/generatedQuery";
 import type { SqlCorrection } from "../lib/llmSql";
 import type { QueryResult } from "../lib/queryRunner";
 import {
@@ -59,6 +59,76 @@ assert.equal(sqlContractIssues(
   "Calculate the three-month average of monthly recorded value.",
   "SELECT AVG(value) FROM t",
 ).length, 1);
+assert.equal(sqlContractIssues(
+  "Aggregate by article_id first before joining products.",
+  "WITH a AS (SELECT article_id, COUNT(*) n FROM facts GROUP BY article_id) SELECT * FROM a JOIN products p USING (article_id)",
+).length, 0);
+assert.match(sqlContractIssues(
+  "Tổng hợp theo t_dat trước, sau đó tính theo tháng.",
+  "WITH d AS (SELECT t_dat, value FROM facts) SELECT month, SUM(value) FROM d GROUP BY month",
+).join(" "), /Pre-aggregate by t_dat/);
+assert.match(sqlContractIssues(
+  "Calculate nearest-rank P25.",
+  "SELECT value FROM ranked WHERE rn = FLOOR(0.25 * (n + 1))",
+).join(" "), /CEIL/);
+assert.match(sqlContractIssues(
+  "Return codes_with_multiple_names and names_with_multiple_codes.",
+  "SELECT COUNT(DISTINCT code) AS codes_with_multiple_names, COUNT(DISTINCT name) AS names_with_multiple_codes FROM mapped WHERE names_per_code > 1 OR codes_per_name > 1",
+).join(" "), /contaminates/);
+assert.equal(sqlContractIssues(
+  "Return codes_with_multiple_names and names_with_multiple_codes.",
+  "SELECT COUNT(DISTINCT CASE WHEN names_per_code > 1 THEN code END) AS codes_with_multiple_names, COUNT(DISTINCT CASE WHEN codes_per_name > 1 THEN name END) AS names_with_multiple_codes FROM mapped",
+).length, 0);
+assert.match(sqlContractIssues(
+  "Return codes_with_multiple_names and names_with_multiple_codes.",
+  "SELECT SUM(CASE WHEN a.num_names > 1 THEN 1 ELSE 0 END) AS codes_with_multiple_names, SUM(CASE WHEN b.num_codes > 1 THEN 1 ELSE 0 END) AS names_with_multiple_codes FROM mappings m LEFT JOIN code_counts a ON m.mapping=a.mapping LEFT JOIN name_counts b ON m.mapping=b.mapping",
+).join(" "), /multiplies rows/);
+assert.match(sqlContractIssues(
+  "Calculate nearest-rank P25.",
+  "SELECT PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY value) FROM facts",
+).join(" "), /CEIL/);
+assert.match(sqlContractIssues(
+  "Rank products.",
+  "SELECT at.transaction_rows FROM article_totals at",
+).join(" "), /non-reserved table alias/);
+assert.equal(
+  normalizeSqlAliases("SELECT at.n FROM article_totals at JOIN articles a ON at.id = a.id"),
+  "SELECT at_alias.n FROM article_totals at_alias JOIN articles a ON at_alias.id = a.id",
+);
+assert.equal(
+  normalizeMultiplicityCollections(
+    "Return codes_with_multiple_names and names_with_multiple_codes.",
+    "SELECT COALESCE((SELECT LIST(code) FROM counts WHERE n > 1), []) AS codes_with_multiple_names",
+  ),
+  "SELECT COALESCE((SELECT COUNT(DISTINCT code) FROM counts WHERE n > 1), 0) AS codes_with_multiple_names",
+);
+assert.deepEqual(
+  alignResultColumns({
+    sql: "SELECT mapping_label FROM facts",
+    columns: ["mapping_label", "n"],
+    rows: [{ mapping_label: "code_name", n: 1 }],
+    truncated: false,
+  }, ["mapping"]).rows,
+  [{ mapping: "code_name", n: 1 }],
+);
+assert.equal(normalizeDerivedMetrics({
+  sql: "SELECT ...",
+  columns: ["correct_average", "naive_average", "absolute_gap"],
+  rows: [{ correct_average: 10, naive_average: 8, absolute_gap: -2 }],
+  truncated: false,
+}).rows[0].absolute_gap, 2);
+assert.deepEqual(
+  pivotNamedScalarMetrics({
+    sql: "SELECT relationship, orphan_count FROM audit",
+    columns: ["relationship", "orphan_count"],
+    rows: [
+      { relationship: "article", orphan_count: 0 },
+      { relationship: "customer", orphan_count: 2 },
+    ],
+    truncated: false,
+  }, ["orphan_article_rows", "orphan_customer_rows"]).rows,
+  [{ orphan_article_rows: 0, orphan_customer_rows: 2 }],
+);
 assert.deepEqual(
   explicitResultContract(
     "Return mapping, codes_with_multiple_names, names_with_multiple_codes for exactly 11 mappings.",
@@ -87,6 +157,17 @@ assert.deepEqual(
 assert.deepEqual(
   explicitResultContract("Không trả về article_id. Trả về top_10_transaction_rows và top_10_share_pct."),
   { requiredColumns: ["top_10_transaction_rows", "top_10_share_pct"] },
+);
+assert.deepEqual(
+  explicitResultContract("Return strftime(t_dat, '%w') as weekday, weekday_days, avg_transaction_rows."),
+  { requiredColumns: ["weekday", "weekday_days", "avg_transaction_rows"] },
+);
+assert.deepEqual(
+  explicitResultContract("Trả về orphan_article_rows và orphan_customer_rows."),
+  {
+    requiredColumns: ["orphan_article_rows", "orphan_customer_rows"],
+    expectedRowCount: 1,
+  },
 );
 
 assert.match(
@@ -171,6 +252,46 @@ assert.equal(qualityRepaired.intent, "query");
 assert.match(qualityCorrections[0].error, /^\[quality:1\].*duplicate rows/);
 assert.deepEqual(qualityCorrections[0].brief, qualityBrief);
 
+let stagedAttempt = 0;
+const crossStageRepaired = await generateAndRunQuery(
+  "Return the unrounded value.",
+  async () => [
+    "SELECT ROUND(value, 2) AS value FROM facts",
+    "SELECT broken AS value FROM facts",
+    "SELECT value FROM facts",
+  ][stagedAttempt++],
+  (sql) => {
+    if (sql.includes("broken")) throw new Error("no such column: broken");
+    return { sql, columns: ["value"], rows: [{ value: 1 }], truncated: false };
+  },
+);
+assert.equal(crossStageRepaired.intent, "query");
+if (crossStageRepaired.intent !== "query") throw new Error("Expected query result.");
+assert.equal(crossStageRepaired.sqlAttempts?.length, 2);
+
+let shapedCorrection: SqlCorrection | undefined;
+await generateAndRunQuery(
+  "Return mapping, codes_with_multiple_names, names_with_multiple_codes for exactly 11 mappings.",
+  async (_question, correction) => {
+    shapedCorrection = correction;
+    return correction
+      ? "SELECT mapping, codes_with_multiple_names, names_with_multiple_codes FROM fixed"
+      : "SELECT STRING_AGG(code, ',') AS codes_with_multiple_names FROM broken";
+  },
+  (sql) => ({
+    sql,
+    columns: ["mapping", "codes_with_multiple_names", "names_with_multiple_codes"],
+    rows: Array.from({ length: 11 }, (_, index) => ({
+      mapping: `m${index}`,
+      codes_with_multiple_names: 0,
+      names_with_multiple_codes: 0,
+    })),
+    truncated: false,
+  }),
+);
+assert.equal(shapedCorrection?.brief?.grain, "exactly 11 rows");
+assert.deepEqual(shapedCorrection?.brief?.dimensions, ["mapping"]);
+
 const contractCorrections: SqlCorrection[] = [];
 const contractResult = await generateAndRunQuery(
   "Return mapping, codes_with_multiple_names, names_with_multiple_codes for exactly 11 mappings; for example mapping alpha.",
@@ -213,7 +334,7 @@ const contractResult = await generateAndRunQuery(
       },
 );
 assert.equal(contractResult.intent, "query");
-assert.match(contractCorrections[0].error, /missing explicitly requested columns: mapping/);
+assert.match(contractCorrections[0].error, /non-negative numeric metric/);
 assert.match(contractCorrections[0].error, /Array aggregates were not requested/);
 assert.deepEqual(contractCorrections[0].brief?.outputColumns, [
   "mapping",

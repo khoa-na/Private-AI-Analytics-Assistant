@@ -57,6 +57,14 @@ export function assessResultQuality(
     }
   }
 
+  for (const column of brief.outputColumns.filter((name) =>
+    /(?:_count|_rows|_days)$|^(?:count|avg|average)_|^(?:codes|names)_with_/i.test(name))) {
+    if (columns.includes(column) && rows.some((row) =>
+      typeof row[column] !== "number" || row[column] < 0)) {
+      issues.push(`${column} must be a non-negative numeric metric.`);
+    }
+  }
+
   const caveats = [
     ...(!rows.length ? ["The query returned no rows."] : []),
     ...(truncated ? ["The query result was truncated by the row limit."] : []),

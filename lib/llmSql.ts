@@ -189,6 +189,13 @@ function completeClarification(question: string, plan: IntentResponse): IntentRe
   return { ...plan, message: `${plan.message} What time period should the comparison cover?` };
 }
 
+export function causalUnsupportedForQuestion(question: string) {
+  if (!/\b(?:cause[ds]?|causal(?:ity)?|caused by)\b|gây ra|nhân quả|khiến cho/i.test(question)) {
+    return undefined;
+  }
+  return "This observational dataset can measure associations, but it cannot determine causality. A causal claim requires an appropriate experiment or causal identification design, and any business measure must also have a confirmed definition.";
+}
+
 async function generateSingleQueryPlan(question: string) {
   const context = await getSqlContext();
   const output = await atStage("sql", 1, () => completeChat([
@@ -272,6 +279,8 @@ export async function generateSql(question: string, correction?: SqlCorrection) 
   if (correction) return generateGeneralSql(question, correction);
   const privacyRefusal = privacyRefusalForQuestion(question);
   if (privacyRefusal) return { intent: "refusal" as const, message: privacyRefusal };
+  const causalUnsupported = causalUnsupportedForQuestion(question);
+  if (causalUnsupported) return { intent: "unsupported" as const, message: causalUnsupported };
   const semanticClarification = getSemanticClarification(question);
   if (semanticClarification) return { intent: "clarification" as const, message: semanticClarification };
 
