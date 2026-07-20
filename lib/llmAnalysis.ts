@@ -134,7 +134,15 @@ export async function parseAnalysisWithOneRetry(
         firstError instanceof Error ? firstError.message : "Invalid analysis output.",
       );
     } catch {
-      const evidence = [...allowedEvidence].slice(0, 3);
+      const allEvidence = [...allowedEvidence];
+      const byStep = new Map<string, string>();
+      for (const item of allEvidence) {
+        const step = item.match(/^(\d+):/)?.[1];
+        if (step && !item.includes(": row_number = ") && !byStep.has(step)) byStep.set(step, item);
+      }
+      const evidence = [...byStep.values(), ...allEvidence]
+        .filter((item, index, items) => items.indexOf(item) === index)
+        .slice(0, Math.max(3, byStep.size));
       return {
         analysis: {
           summary: evidence.length
@@ -142,7 +150,7 @@ export async function parseAnalysisWithOneRetry(
             : "The query succeeded, but no row evidence was available.",
           summaryEvidence: evidence,
           insights: [],
-          caveats: [...allowedCaveats, "A deterministic evidence fallback was used because model analysis was unavailable."],
+          caveats: [...allowedCaveats, "A deterministic evidence fallback was used after model analysis was unavailable."],
         },
         chart: {
           type: "none" as const,

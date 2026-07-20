@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { applyParentResultContract, runMultiQueryPlan } from "../lib/multiQuery";
+import { applyParentResultContract, runMultiQueryPlan, sourceTablesFromSql } from "../lib/multiQuery";
 
 const brief = {
   objective: "Compare delivery and reviews",
@@ -40,6 +40,22 @@ assert.deepEqual(contractedSteps[0].brief?.outputColumns, [
 assert.deepEqual(contractedSteps[1].brief?.outputColumns, ["invalid_age_rows"]);
 assert.match(contractedSteps[0].brief?.grain ?? "", /exactly 11 rows/);
 assert.doesNotMatch(contractedSteps[1].brief?.grain ?? "", /exactly 11 rows/);
+const transactionSteps = applyParentResultContract(
+  "Return separate views ranked by transaction rows.",
+  [{
+    kind: "query",
+    purpose: "Products by transaction count",
+    question: "Rank products by transaction count",
+    brief: { ...brief, outputColumns: ["product", "product_count"] },
+    sql: "SELECT product, COUNT(*) AS product_count FROM transactions GROUP BY product",
+  }],
+);
+assert.deepEqual(transactionSteps[0].brief?.outputColumns, ["product", "transaction_rows"]);
+assert.match(transactionSteps[0].sql, /AS transaction_rows/);
+assert.deepEqual(
+  sourceTablesFromSql("WITH daily AS (SELECT * FROM transactions) SELECT * FROM daily JOIN articles a ON true"),
+  ["transactions", "articles"],
+);
 
 const questions: string[] = [];
 const output = await runMultiQueryPlan(
@@ -99,6 +115,7 @@ assert.deepEqual(questions, [
   "Review score by state",
 ]);
 assert.equal(output.steps.length, 2);
+assert.deepEqual(output.steps[0].sourceTables, []);
 assert.equal(output.timings.sqlGenerationMs, 2);
 assert.equal(output.timings.queryMs, 4);
 

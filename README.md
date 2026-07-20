@@ -13,7 +13,7 @@ instead of hidden.
 - Generic onboarding for DuckDB, CSV, TSV, and Parquet datasets.
 - Versioned semantic-layer generation, independent review, and approval.
 - Schema-aware text-to-SQL with read-only validation before execution.
-- Bounded planning with at most three queries and one SQL repair attempt.
+- Bounded planning with at most three queries and progressive SQL repair.
 - Result profiling and structured analysis linked to executed evidence.
 - Dataset-specific, bilingual evaluation with correctness, safety, grounding,
   latency, and recovery metrics.
@@ -33,13 +33,13 @@ flowchart TD
     SQ --> RV["5. Material SQL review"]
     MQ --> RV
     RV --> V["6. Read-only and request-contract validation"]
-    V -->|Invalid| RP["One repair attempt"]
+    V -->|Invalid| RP["Bounded progressive repair"]
     RP --> V
-    V -->|Valid| DB["7. Read-only DuckDB execution"]
+    V -->|Valid| DB["7. Read-only DuckDB execution with timeout"]
     DB --> QC["8. Result shape, grain, and quality checks"]
     QC -->|Invalid| RP
     QC -->|Valid single result| PF["9. Bounded result profile"]
-    QC -->|Valid multi-query steps| EV["Merge step-labelled evidence"]
+    QC -->|Valid multi-query steps| EV["Merge step-labelled evidence and provenance"]
     EV --> PF
     PF --> DA["10. Deterministic analysis when possible"]
     DA -->|Needs interpretation| LA["Grounded LLM analysis"]
@@ -70,16 +70,19 @@ The request lifecycle is deliberately bounded:
    contracts before execution.
 7. DuckDB runs the SQL without exposing database access to the model.
 8. Returned columns, row count, grain, truncation, and known analytical traps
-   are checked. SQL generation receives at most one repair attempt across
-   validation, execution, and result-quality failures.
+   are checked. SQL normally receives one repair; a third attempt is allowed
+   only when the previous repair reached a new validation stage or exposed a
+   different quality issue. DuckDB interrupts a query after 120 seconds by
+   default, configurable through `DUCKDB_QUERY_TIMEOUT_MS`.
 9. Results are compressed into types, statistics, truncation state, and bounded
-   evidence rows. Multi-query steps execute concurrently and retain their
-   individual SQL and evidence.
+   evidence rows. Multi-query steps execute concurrently, retain physical-table
+   provenance through CTEs, and keep their individual SQL and evidence.
 10. Simple results use deterministic analysis. Other results are interpreted by
     the LLM using only the supplied profile, evidence, and allowed caveats.
 11. Analysis JSON, evidence references, claims, and chart keys are validated.
     One analysis repair is allowed; invalid output falls back to deterministic
-    evidence instead of fabricating an answer.
+    evidence instead of fabricating an answer. Multi-query fallback evidence is
+    balanced across steps rather than being taken only from the first result.
 12. The response includes the answer, caveats, chart recommendation, executed
     SQL, result rows, repair history, and per-stage timings.
 
@@ -94,17 +97,26 @@ Two consecutive full runs on `deepseek-v4-flash` with thinking disabled,
 
 | Metric | Result |
 | --- | ---: |
-| Passed | 84 / 97 and 85 / 97 |
-| Pass/fail agreement | 92 / 97 (94.8%) |
-| Average wall time | 239.6 seconds |
+| Passed | 85 / 97 and 87 / 97 |
+| Pass/fail agreement | 93 / 97 (95.9%) |
+| Average wall time | 243.5 seconds |
 | Safety failures | 0 in both runs |
-| Persistent failures | 10 |
+| Persistent failures | 9 |
 
 Disabling DeepSeek thinking made `temperature: 0` effective, improved the
-previous 78/97 result, and reduced average runtime from about 614 seconds. The
-remaining work is concentrated in output-contract parsing, complex
-planner/executor contracts, and five cases that still changed pass/fail state
-between the two runs.
+previous 78/97 result, and reduced average runtime from about 614 seconds.
+System-level guards now cover reserved aliases, explicit aggregation grain,
+nearest-rank percentiles, scalar/long-form normalization, mapping
+multiplicity, causal capability routing, and multi-query evidence provenance.
+
+Six cases that failed both prior baseline runs passed both latest runs:
+`hm-temporal-02`, `hm-product-02`, `hm-semantics-07`, `hm-complex-08`,
+`hm-stat-01`, and `hm-complex-09`. Four known regressions remain:
+`hm-temporal-06` exposes an over-eager scalar inference, while
+`hm-channel-08`, `hm-complex-01`, and `hm-complex-05` expose causal-gate
+false positives on explicitly non-causal wording. `hm-complex-11` remains the
+main planner/executor failure: SQL repair does not reliably preserve the
+requested 11-row mapping grain.
 
 ## Stack
 
@@ -116,10 +128,11 @@ between the two runs.
 
 ## Current Limits
 
-- Not production-ready: ten cases failed both latest evaluation runs.
+- Not production-ready: nine cases failed both latest evaluation runs.
 - LLM output is not fully deterministic even with `temperature: 0`.
-- Follow-up conversation, query cancellation, and production observability are
-  not complete.
+- Follow-up conversation and production observability are not complete.
+- Deterministic gates still need better negation handling and dimension-aware
+  scalar inference before they can be treated as general policy enforcement.
 - Datasets and API credentials remain local, so the full H&M benchmark requires
   users to provide their own data and compatible model endpoint.
 

@@ -24,6 +24,7 @@ assert.equal(prefersSingleQueryFallback("Return mapping and counts for exactly 1
 assert.equal(prefersSingleQueryFallback("Return three independent audit queries."), false);
 assert.match(causalUnsupportedForQuestion("Did receiving news cause customers to spend more?") ?? "", /cannot determine causality/);
 assert.equal(causalUnsupportedForQuestion("Compare spending by news status."), undefined);
+assert.equal(causalUnsupportedForQuestion("Summarize without claiming causality."), undefined);
 
 const scalarBrief = {
   objective: "Count rows",

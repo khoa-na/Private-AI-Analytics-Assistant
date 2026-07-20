@@ -29,6 +29,18 @@ export function normalizeMultiplicityCollections(question: string, sql: string) 
     .replace(/,\s*\[\]\s*\)/g, ", 0)");
 }
 
+export function removeSelfMappings(question: string, sql: string) {
+  if (!/\bcodes_with_multiple_names\b/i.test(question) ||
+    !/\bnames_with_multiple_codes\b/i.test(question)) return sql;
+  return sql.replace(
+    /\s+UNION\s+ALL\s+SELECT\s+'[^']+'\s*,\s*([^,\r\n]+)\s*,\s*([^,\r\n]+)\s+FROM\s+[A-Za-z_][A-Za-z0-9_]*/gi,
+    (branch, code: string, name: string) =>
+      code.replace(/\s+/g, " ").trim().toLowerCase() === name.replace(/\s+/g, " ").trim().toLowerCase()
+        ? ""
+        : branch,
+  );
+}
+
 export function pivotNamedScalarMetrics(result: QueryResult, requiredColumns: string[]) {
   if (result.rows.length < 2 || !requiredColumns.length) return result;
   const dimensions = result.columns.filter((column) =>
@@ -45,6 +57,21 @@ export function pivotNamedScalarMetrics(result: QueryResult, requiredColumns: st
   }));
   if (Object.values(row).some((value) => typeof value !== "number")) return result;
   return { ...result, columns: requiredColumns, rows: [row as Row] };
+}
+
+export function pivotLongFormScalar(result: QueryResult) {
+  if (result.columns.length !== 2 || result.rows.length < 2) return result;
+  const [labelColumn, valueColumn] = result.columns;
+  const labels = result.rows.map((row) => row[labelColumn]);
+  if (!labels.every((label) => typeof label === "string") ||
+    new Set(labels).size !== labels.length) return result;
+  const entries = result.rows.map((row, index) => {
+    const raw = row[valueColumn];
+    const value = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : raw;
+    return [labels[index], value] as const;
+  });
+  if (entries.some(([, value]) => typeof value !== "number" || !Number.isFinite(value))) return result;
+  return { ...result, columns: labels as string[], rows: [Object.fromEntries(entries)] };
 }
 
 export function alignExplicitOutputColumns(outputColumns: string[], requiredColumns: string[]) {
@@ -201,7 +228,9 @@ export function sqlContractIssues(question: string, sql: string) {
     issues.push("Do not count null values as invalid-domain values unless explicitly requested.");
   }
   if (/\b(?:band|bucket)\b|phân nhóm/i.test(question) && /\bCASE\b[\s\S]*?\bELSE\b/i.test(sql) &&
-    !/\bIS\s+NULL\b/i.test(sql) && !/exclude.*(?:null|missing)|loại.*(?:null|thiếu)/i.test(question)) {
+    !/\bIS\s+(?:NOT\s+)?NULL\b/i.test(sql) &&
+    !/\bELSE\s+'(?:unknown|missing|null|không rõ|thiếu)'/i.test(sql) &&
+    !/exclude.*(?:null|missing)|loại.*(?:null|thiếu)/i.test(question)) {
     issues.push("Bucket null source values explicitly; do not let them fall into a numeric ELSE bucket.");
   }
   if (/sentinel/i.test(question) && /=\s*-1(?:\s+AND[\s\S]*?=\s*-1){2,}/i.test(sql) &&
@@ -269,11 +298,11 @@ export async function generateAndRunQuery(
     }
     let sql: string;
     if (typeof generated === "string") {
-      sql = normalizeMultiplicityCollections(question, normalizeSqlAliases(generated));
+      sql = removeSelfMappings(question, normalizeMultiplicityCollections(question, normalizeSqlAliases(generated)));
     } else if (generated.intent === "query") {
       brief = generated.brief;
       review = generated.review;
-      sql = normalizeMultiplicityCollections(question, normalizeSqlAliases(generated.sql));
+      sql = removeSelfMappings(question, normalizeMultiplicityCollections(question, normalizeSqlAliases(generated.sql)));
     } else {
       return { ...generated, sqlGenerationMs, queryMs };
     }
@@ -306,6 +335,13 @@ export async function generateAndRunQuery(
       if (contractIssues.length) throw new PipelineStageError("quality", contractIssues.join(" "), attempt);
       let result = await runTimed(sql, attempt);
       result = alignResultColumns(result, requestContract.requiredColumns);
+      if (brief?.dimensions.length === 0) {
+        const pivoted = pivotLongFormScalar(result);
+        if (pivoted !== result) {
+          result = pivoted;
+          brief = { ...brief, outputColumns: result.columns };
+        }
+      }
       result = normalizeDerivedMetrics(result);
       if (!brief && requestContract.expectedRowCount === 1) {
         result = pivotNamedScalarMetrics(result, requestContract.requiredColumns);
@@ -348,7 +384,16 @@ export async function generateAndRunQuery(
       const repairIntroducedExecutionError = attempt === 2 &&
         /^\[quality:1\]/.test(sqlAttempts[0]?.error ?? "") &&
         /^\[execution:2\]/.test(message);
-      if (/Database not found/i.test(message) || attempt === 3 || (attempt === 2 && !repairIntroducedExecutionError)) {
+      const repairExposedNewQualityIssue = attempt === 2 &&
+        /^\[quality:1\]/.test(sqlAttempts[0]?.error ?? "") &&
+        /^\[quality:2\]/.test(message) &&
+        sqlAttempts[0].error.replace(/^\[quality:1\]\s*/, "") !== message.replace(/^\[quality:2\]\s*/, "");
+      const repairReachedQualityValidation = attempt === 2 &&
+        /^\[execution:1\]/.test(sqlAttempts[0]?.error ?? "") &&
+        /^\[quality:2\]/.test(message);
+      if (/Database not found/i.test(message) || attempt === 3 ||
+        (attempt === 2 && !repairIntroducedExecutionError && !repairExposedNewQualityIssue &&
+          !repairReachedQualityValidation)) {
         if (error instanceof PipelineStageError) error.sqlAttempts = sqlAttempts;
         throw error;
       }

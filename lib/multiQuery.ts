@@ -11,14 +11,34 @@ import { profileResult } from "./resultProfile";
 
 type PlannedStep = MultiQueryPlan["steps"][number];
 
+export function sourceTablesFromSql(sql: string) {
+  const ctes = new Set([...sql.matchAll(/(?:\bWITH\b|,)\s*"?([A-Za-z_][A-Za-z0-9_]*)"?\s+AS\s*\(/gi)]
+    .map((match) => match[1].toLowerCase()));
+  return [...new Set([...sql.matchAll(/\b(?:FROM|JOIN)\s+"?([A-Za-z_][A-Za-z0-9_]*)"?/gi)]
+    .map((match) => match[1].toLowerCase())
+    .filter((table) => !ctes.has(table)))];
+}
+
 export function applyParentResultContract(question: string, steps: PlannedStep[]) {
   const contract = explicitResultContract(question);
-  const planned = steps.map((step) => ({
-    ...step,
-    ...(step.brief
-      ? { brief: { ...step.brief, outputColumns: [...step.brief.outputColumns] } }
-      : {}),
-  }));
+  const planned = steps.map((step) => {
+    if (!step.brief) return { ...step };
+    const brief = { ...step.brief, outputColumns: [...step.brief.outputColumns] };
+    const asksForTransactionRows = /\btransaction rows?\b/i.test(question) &&
+      /\btransactions?\b/i.test([step.question, step.purpose, brief.metric].join(" "));
+    const countAlias = brief.outputColumns.find((column) =>
+      /^(?:transaction_count|row_count|count|cnt|product_count)$/i.test(column));
+    if (asksForTransactionRows && countAlias && countAlias !== "transaction_rows") {
+      brief.outputColumns = brief.outputColumns.map((column) =>
+        column === countAlias ? "transaction_rows" : column);
+      return {
+        ...step,
+        brief,
+        sql: step.sql.replace(new RegExp(`\\bAS\\s+${countAlias}\\b`, "gi"), "AS transaction_rows"),
+      };
+    }
+    return { ...step, brief };
+  });
   const declared = new Set(planned.flatMap((step) => step.brief?.outputColumns ?? []));
 
   for (const column of contract.requiredColumns) {
@@ -69,7 +89,7 @@ function runPlannedStep(step: PlannedStep) {
 export async function runMultiQueryPlan(
   question: string,
   plan: MultiQueryPlan,
-  runStep: (step: PlannedStep) => ReturnType<typeof runPlannedStep> = runPlannedStep,
+  runStep?: (step: PlannedStep) => ReturnType<typeof runPlannedStep>,
   analyze = analyzeResult,
 ): Promise<{
   steps: AnalysisStep[];
@@ -83,7 +103,8 @@ export async function runMultiQueryPlan(
   let queryMs = 0;
 
   const plannedSteps = applyParentResultContract(question, plan.steps);
-  const generatedSteps = await Promise.all(plannedSteps.map(runStep));
+  const executeStep = runStep ?? runPlannedStep;
+  const generatedSteps = await Promise.all(plannedSteps.map(executeStep));
   for (const [index, generated] of generatedSteps.entries()) {
     const step = plannedSteps[index];
     sqlGenerationMs += generated.sqlGenerationMs;
@@ -96,6 +117,7 @@ export async function runMultiQueryPlan(
     steps.push({
       ...step,
       brief,
+      sourceTables: sourceTablesFromSql(generated.result.sql),
       ...(generated.sqlAttempts?.length ? { sqlAttempts: generated.sqlAttempts } : {}),
       quality: generated.quality,
       result: generated.result,

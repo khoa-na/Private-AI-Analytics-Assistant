@@ -39,6 +39,7 @@ export type AnalysisStep = {
   question: string;
   brief: AnalysisBrief;
   sql: string;
+  sourceTables?: string[];
   sqlAttempts?: Array<{ attempt: number; sql: string; error: string }>;
   quality: { issues: string[]; caveats: string[] };
   result: {

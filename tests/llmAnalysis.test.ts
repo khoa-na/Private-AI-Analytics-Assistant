@@ -93,6 +93,25 @@ assert.equal(fallback.chart.type, "none");
 assert.equal(fallback.analysis.insights.length, 0);
 assert.deepEqual(fallback.analysis.summaryEvidence, ["month = 2024-01", "revenue = 10"]);
 assert.match(fallback.analysis.summary, /Validated evidence/);
+const multiFallback = await parseAnalysisWithOneRetry(
+  async () => "not json",
+  [],
+  new Set([
+    "analysis_step = 1: Peak",
+    "1: Peak: row_number = 1",
+    "1: Peak: peak_date = 2020-01-01",
+    "analysis_step = 2: Mix",
+    "2: Mix: channel = 2",
+    "analysis_step = 3: Product",
+    "3: Product: product = Shirt",
+  ]),
+);
+assert.deepEqual(multiFallback.analysis.summaryEvidence, [
+  "1: Peak: peak_date = 2020-01-01",
+  "2: Mix: channel = 2",
+  "3: Product: product = Shirt",
+]);
+assert.doesNotMatch(multiFallback.analysis.caveats.join(" "), /\bbecause\b/i);
 
 const scalar = deterministicAnalysis(
   "Tổng doanh thu là bao nhiêu?",

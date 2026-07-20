@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { alignResultColumns, explicitResultContract, generateAndRunQuery, normalizeDerivedMetrics, normalizeMultiplicityCollections, normalizeSqlAliases, pivotNamedScalarMetrics, sqlContractIssues } from "../lib/generatedQuery";
+import { alignResultColumns, explicitResultContract, generateAndRunQuery, normalizeDerivedMetrics, normalizeMultiplicityCollections, normalizeSqlAliases, pivotLongFormScalar, pivotNamedScalarMetrics, removeSelfMappings, sqlContractIssues } from "../lib/generatedQuery";
 import type { SqlCorrection } from "../lib/llmSql";
 import type { QueryResult } from "../lib/queryRunner";
 import {
@@ -60,6 +60,14 @@ assert.equal(sqlContractIssues(
   "SELECT AVG(value) FROM t",
 ).length, 1);
 assert.equal(sqlContractIssues(
+  "Group customers into recency buckets.",
+  "WITH r AS (SELECT days FROM facts WHERE days IS NOT NULL) SELECT CASE WHEN days < 30 THEN 'recent' ELSE 'old' END AS bucket FROM r",
+).length, 0);
+assert.equal(sqlContractIssues(
+  "Group customers into recency buckets.",
+  "SELECT CASE WHEN days < 30 THEN 'recent' ELSE 'unknown' END AS bucket FROM facts",
+).length, 0);
+assert.equal(sqlContractIssues(
   "Aggregate by article_id first before joining products.",
   "WITH a AS (SELECT article_id, COUNT(*) n FROM facts GROUP BY article_id) SELECT * FROM a JOIN products p USING (article_id)",
 ).length, 0);
@@ -102,6 +110,13 @@ assert.equal(
   ),
   "SELECT COALESCE((SELECT COUNT(DISTINCT code) FROM counts WHERE n > 1), 0) AS codes_with_multiple_names",
 );
+assert.doesNotMatch(
+  removeSelfMappings(
+    "Return codes_with_multiple_names and names_with_multiple_codes.",
+    "SELECT 'code_name', code, name FROM facts UNION ALL SELECT 'category', category, category FROM facts",
+  ),
+  /'category'/,
+);
 assert.deepEqual(
   alignResultColumns({
     sql: "SELECT mapping_label FROM facts",
@@ -128,6 +143,19 @@ assert.deepEqual(
     truncated: false,
   }, ["orphan_article_rows", "orphan_customer_rows"]).rows,
   [{ orphan_article_rows: 0, orphan_customer_rows: 2 }],
+);
+assert.deepEqual(
+  pivotLongFormScalar({
+    sql: "SELECT metric, value FROM audit",
+    columns: ["metric", "value"],
+    rows: [
+      { metric: "correct_average", value: "10" },
+      { metric: "naive_average", value: "8" },
+      { metric: "absolute_gap", value: "2" },
+    ],
+    truncated: false,
+  }).rows,
+  [{ correct_average: 10, naive_average: 8, absolute_gap: 2 }],
 );
 assert.deepEqual(
   explicitResultContract(

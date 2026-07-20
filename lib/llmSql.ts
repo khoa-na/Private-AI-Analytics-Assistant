@@ -190,6 +190,9 @@ function completeClarification(question: string, plan: IntentResponse): IntentRe
 }
 
 export function causalUnsupportedForQuestion(question: string) {
+  if (/\bwithout\s+(?:claiming|assuming|asserting)\s+caus|\bno\s+causal\s+claim|không[^.;\n]*(?:kết luận|gọi)[^.;\n]*nhân quả/i.test(question)) {
+    return undefined;
+  }
   if (!/\b(?:cause[ds]?|causal(?:ity)?|caused by)\b|gây ra|nhân quả|khiến cho/i.test(question)) {
     return undefined;
   }

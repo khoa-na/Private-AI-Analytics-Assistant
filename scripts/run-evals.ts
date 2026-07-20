@@ -213,7 +213,8 @@ function matchesExpectedSteps(test: EvalCase, steps: Awaited<ReturnType<typeof r
           .map(([expected, actual]) => [expected, row[actual!]]),
       ]));
       return item.expectedTables.every((table) =>
-        new RegExp(`\\b${table}\\b`, "i").test(result.sql),
+        steps[candidate].sourceTables?.includes(table.toLowerCase()) ??
+          new RegExp(`\\b${table}\\b`, "i").test(result.sql),
       ) && (item.expectedColumns ?? []).every((column) => columns.includes(column)) &&
         evaluateExpectedFacts(rows, item.expectedFacts) &&
         (item.expectedRowCount === undefined || result.rows.length === item.expectedRowCount) &&

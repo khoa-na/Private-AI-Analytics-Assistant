@@ -9,6 +9,14 @@ export type QueryResult = {
   truncated: boolean;
 };
 
+export function queryTimeoutMs() {
+  const value = Number(process.env.DUCKDB_QUERY_TIMEOUT_MS ?? 120_000);
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error("DUCKDB_QUERY_TIMEOUT_MS must be a positive integer.");
+  }
+  return value;
+}
+
 export function prepareReadOnlyQuery(sql: string, limit = 1000) {
   const safeSql = validateReadOnlySql(sql);
   const explicitLimit = safeSql.match(/\blimit\s+(\d+)(?:\s+offset\s+\d+)?\s*$/i);
@@ -26,6 +34,7 @@ export function prepareReadOnlyQuery(sql: string, limit = 1000) {
 export async function runReadOnlyQuery(sql: string): Promise<QueryResult> {
   const prepared = prepareReadOnlyQuery(sql);
   const db = await getDb();
+  const timeout = setTimeout(() => db.interrupt(), queryTimeoutMs());
   try {
     const result = await readQuery(db, prepared.executionSql);
     const rows = result.rows as Row[];
@@ -36,6 +45,7 @@ export async function runReadOnlyQuery(sql: string): Promise<QueryResult> {
       truncated: prepared.limit !== undefined && rows.length > prepared.limit,
     };
   } finally {
+    clearTimeout(timeout);
     db.closeSync();
   }
 }
