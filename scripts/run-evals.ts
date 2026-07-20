@@ -132,6 +132,7 @@ function writeReport() {
       },
     } : {}),
     model: process.env.OPENAI_MODEL ?? "unknown",
+    thinking: process.env.DEEPSEEK_THINKING_MODE ?? "provider-default",
     reasoning: {
       sql: process.env.OPENAI_SQL_REASONING_EFFORT ?? process.env.OPENAI_REASONING_EFFORT ?? "provider-default",
       analysis: process.env.OPENAI_ANALYSIS_REASONING_EFFORT ?? process.env.OPENAI_REASONING_EFFORT ?? "provider-default",

@@ -1,11 +1,59 @@
 import type { Analysis, AnalysisStep, ChartSpec, Row } from "./analyticsTypes";
-import { generateAndRunQuery } from "./generatedQuery";
+import {
+  alignExplicitOutputColumns,
+  explicitResultContract,
+  generateAndRunQuery,
+} from "./generatedQuery";
 import { analyzeResult } from "./llmAnalysis";
 import { generateGeneralSql } from "./llmSql";
 import type { MultiQueryPlan } from "./queryPlan";
 import { profileResult } from "./resultProfile";
 
 type PlannedStep = MultiQueryPlan["steps"][number];
+
+export function applyParentResultContract(question: string, steps: PlannedStep[]) {
+  const contract = explicitResultContract(question);
+  const planned = steps.map((step) => ({
+    ...step,
+    ...(step.brief
+      ? { brief: { ...step.brief, outputColumns: [...step.brief.outputColumns] } }
+      : {}),
+  }));
+  const declared = new Set(planned.flatMap((step) => step.brief?.outputColumns ?? []));
+
+  for (const column of contract.requiredColumns) {
+    if (declared.has(column)) continue;
+    const terms = column.toLowerCase().split("_")
+      .filter((term) => term.length > 2 && !["average", "count", "rows", "value"].includes(term));
+    const scores = planned.map((step) => {
+      if (!step.brief) return 0;
+      const text = [
+        step.purpose,
+        step.question,
+        step.brief.objective,
+        step.brief.metric,
+        ...step.brief.outputColumns,
+      ].join(" ").toLowerCase();
+      return terms.filter((term) => text.includes(term)).length;
+    });
+    const bestScore = Math.max(...scores);
+    if (bestScore > 0) {
+      const brief = planned[scores.indexOf(bestScore)].brief!;
+      brief.outputColumns = alignExplicitOutputColumns(brief.outputColumns, [column]);
+      declared.add(column);
+    }
+  }
+  if (contract.expectedRowCount !== undefined) {
+    const scores = planned.map((step) => step.brief?.outputColumns
+      .filter((column) => contract.requiredColumns.includes(column)).length ?? 0);
+    const bestScore = Math.max(...scores);
+    if (bestScore > 0) {
+      const brief = planned[scores.indexOf(bestScore)].brief!;
+      brief.grain = `${brief.grain}; exactly ${contract.expectedRowCount} rows`;
+    }
+  }
+  return planned;
+}
 
 function runPlannedStep(step: PlannedStep) {
   if (!step.brief) return generateAndRunQuery(step.question);
@@ -34,9 +82,10 @@ export async function runMultiQueryPlan(
   let sqlGenerationMs = 0;
   let queryMs = 0;
 
-  const generatedSteps = await Promise.all(plan.steps.map(runStep));
+  const plannedSteps = applyParentResultContract(question, plan.steps);
+  const generatedSteps = await Promise.all(plannedSteps.map(runStep));
   for (const [index, generated] of generatedSteps.entries()) {
-    const step = plan.steps[index];
+    const step = plannedSteps[index];
     sqlGenerationMs += generated.sqlGenerationMs;
     queryMs += generated.queryMs;
     if (generated.intent !== "query") {

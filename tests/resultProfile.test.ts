@@ -58,5 +58,28 @@ assert.deepEqual(
     caveats: ["The query result was truncated by the row limit."],
   },
 );
+assert.deepEqual(
+  assessResultQuality(
+    ["correct_average", "naive_average", "absolute_gap"],
+    [{ correct_average: 10, naive_average: 8, absolute_gap: 4 }],
+    false,
+    {
+      ...brief,
+      grain: "one scalar row",
+      dimensions: [],
+      outputColumns: ["correct_average", "naive_average", "absolute_gap"],
+    },
+  ).issues,
+  ["absolute_gap must equal the absolute difference between correct_average and naive_average."],
+);
+assert.deepEqual(
+  assessResultQuality(
+    ["mapping"],
+    [{ mapping: "a" }, { mapping: "b" }],
+    false,
+    { ...brief, grain: "one row per mapping; exactly 3 rows", dimensions: ["mapping"], outputColumns: ["mapping"] },
+  ).issues,
+  ["Brief requires exactly 3 rows; SQL returned 2."],
+);
 
 console.log("resultProfile tests passed");

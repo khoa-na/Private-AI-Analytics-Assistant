@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
-import { generateSql, getSqlContext, needsSqlReview, parseMultiOutline, parseSqlPlan, parseSqlReview, shouldFallbackToOutline } from "../lib/llmSql";
+import { generateSql, getSqlContext, needsSqlReview, parseMultiOutline, parseSqlPlan, parseSqlReview, prefersSingleQueryFallback, shouldFallbackToOutline } from "../lib/llmSql";
 
 const directory = mkdtempSync(join(tmpdir(), "llm-sql-"));
 const database = join(directory, "database.duckdb");
@@ -20,6 +20,8 @@ assert.match(context, /Dataset semantics:/);
 assert.match(context, /Schema:\n[^\n]+\(/);
 assert.equal(shouldFallbackToOutline(new Error("Model returned no valid JSON object.")), true);
 assert.equal(shouldFallbackToOutline(new Error("401 invalid API key")), false);
+assert.equal(prefersSingleQueryFallback("Return mapping and counts for exactly 11 mappings."), true);
+assert.equal(prefersSingleQueryFallback("Return three independent audit queries."), false);
 
 const scalarBrief = {
   objective: "Count rows",

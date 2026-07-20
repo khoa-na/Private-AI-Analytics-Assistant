@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { runMultiQueryPlan } from "../lib/multiQuery";
+import { applyParentResultContract, runMultiQueryPlan } from "../lib/multiQuery";
 
 const brief = {
   objective: "Compare delivery and reviews",
@@ -9,6 +9,37 @@ const brief = {
   outputColumns: ["value"],
   filters: [],
 };
+
+const contractedSteps = applyParentResultContract(
+  "Run a long-form 11 mapping audit with mapping, codes_with_multiple_names, names_with_multiple_codes.",
+  [
+    {
+      kind: "query",
+      purpose: "Audit code-name mappings",
+      question: "Show every mapping label and multiplicity count",
+      brief: {
+        ...brief,
+        outputColumns: ["mapping_label", "codes_with_multiple_names", "names_with_multiple_codes"],
+      },
+      sql: "SELECT mapping_label",
+    },
+    {
+      kind: "query",
+      purpose: "Audit invalid ages",
+      question: "Count invalid ages",
+      brief: { ...brief, outputColumns: ["invalid_age_rows"] },
+      sql: "SELECT invalid_age_rows",
+    },
+  ],
+);
+assert.deepEqual(contractedSteps[0].brief?.outputColumns, [
+  "mapping",
+  "codes_with_multiple_names",
+  "names_with_multiple_codes",
+]);
+assert.deepEqual(contractedSteps[1].brief?.outputColumns, ["invalid_age_rows"]);
+assert.match(contractedSteps[0].brief?.grain ?? "", /exactly 11 rows/);
+assert.doesNotMatch(contractedSteps[1].brief?.grain ?? "", /exactly 11 rows/);
 
 const questions: string[] = [];
 const output = await runMultiQueryPlan(

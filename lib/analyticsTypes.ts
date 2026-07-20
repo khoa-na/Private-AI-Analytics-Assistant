@@ -2,7 +2,8 @@ import type { AnalysisBrief } from "./queryPlan";
 
 export type Schema = Record<string, string[]>;
 
-export type Row = Record<string, string | number | null>;
+export type CellValue = string | number | null | CellValue[] | { [key: string]: CellValue };
+export type Row = Record<string, CellValue>;
 
 export type ResultProfile = {
   rowCount: number;

@@ -12,8 +12,67 @@ type Generator = (
 ) => Promise<string | IntentResponse>;
 type Runner = (sql: string) => QueryResult | Promise<QueryResult>;
 
+export function alignExplicitOutputColumns(outputColumns: string[], requiredColumns: string[]) {
+  const aligned = [...outputColumns];
+  for (const required of requiredColumns) {
+    if (aligned.includes(required)) continue;
+    const inferredIndex = aligned.findIndex((column) =>
+      column === `${required}_label` || column === `${required}_name` || column === "label");
+    if (inferredIndex >= 0) aligned[inferredIndex] = required;
+    else aligned.push(required);
+  }
+  return [...new Set(aligned)];
+}
+
+export function explicitResultContract(question: string) {
+  const requiredColumns = new Set<string>();
+  function addColumns(clause: string) {
+    const first = clause.match(/^\s*([A-Za-z][A-Za-z0-9_]*)\s*,/i)?.[1];
+    if (first) requiredColumns.add(first);
+    for (const column of clause.match(/\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b/g) ?? []) {
+      requiredColumns.add(column);
+    }
+  }
+
+  for (const match of question.matchAll(/(?:\breturn|trả về)\s+([^.;\n]+)/gi)) {
+    const prefix = question.slice(Math.max(0, (match.index ?? 0) - 12), match.index).toLowerCase();
+    if (/(?:do\s+not|don't|not|không)\s*$/.test(prefix)) continue;
+    const clause = match[1].split(/\bwithout\b|\bdo not\b|không\s+(?:trả|hiển thị)/i)[0];
+    addColumns(clause);
+  }
+  for (const match of question.matchAll(/(?:\bwith|với)\s+((?:[A-Za-z][A-Za-z0-9_]*\s*,\s*)+[A-Za-z][A-Za-z0-9_]*)/gi)) {
+    addColumns(match[1]);
+  }
+  for (const match of question.matchAll(/\b([A-Za-z][A-Za-z0-9_]*_[A-Za-z0-9_]+)\s+(?:is|là|counts?|đếm)\b/gi)) {
+    requiredColumns.add(match[1]);
+  }
+  const count = question.match(
+    /(?:(?:\bexactly|đúng)\s+|\blong-form\s+)(\d+)\s+(?:rows?|mappings?|mapping|dòng)/i,
+  )?.[1];
+  return {
+    requiredColumns: [...requiredColumns],
+    ...(count ? { expectedRowCount: Number(count) } : {}),
+  };
+}
+
 export function sqlContractIssues(question: string, sql: string) {
   const issues: string[] = [];
+  if (/\b(?:list|array_agg|string_agg)\s*\(/i.test(sql) &&
+    !/\b(?:list|array|collect)\b|danh sách|liệt kê/i.test(question)) {
+    issues.push("Collection aggregation was not requested; return scalar metrics at the declared grain.");
+  }
+  const groupedPeriodAverage = /\baverage of (?:daily|weekly|monthly|quarterly|yearly)\b/i.test(question) ||
+    /trung bình[^.;\n]*(?:ngày|tuần|tháng|quý|năm)/i.test(question);
+  const explicitlyAveragingAverages = /\baverage of (?:daily|weekly|monthly|quarterly|yearly)\s+(?:averages?|means?)\b/i.test(question) ||
+    /trung bình[^.;\n]*trung bình/i.test(question);
+  if (groupedPeriodAverage && (!/\bGROUP\s+BY\b/i.test(sql) ||
+    !/(?:\b(?:date_trunc|strftime|extract|year|month|quarter|week|day)\s*\(|\b(?:date|day|week|month|quarter|year)(?:_\w+)?\b)/i.test(sql))) {
+    issues.push("Preserve the requested period grain in a grouped intermediate result before averaging periods.");
+  }
+  if (groupedPeriodAverage && !explicitlyAveragingAverages &&
+    (sql.match(/\bAVG\s*\(/gi)?.length ?? 0) > 1 && /\bGROUP\s+BY\b/i.test(sql)) {
+    issues.push("Keep a grouped period-level CTE, compute the requested non-average measure there, then average those period rows; do not use an inner average or collapse to base-row grain.");
+  }
   if (/\bround\s*\(/i.test(sql) && !/\b(?:round|decimal|precision)\b|làm tròn|chữ số/i.test(question)) {
     issues.push("Preserve full numeric precision; rounding was not requested.");
   }
@@ -61,6 +120,7 @@ export async function generateAndRunQuery(
   let queryMs = 0;
   let brief: AnalysisBrief | undefined;
   let review: PlanReview | undefined;
+  const requestContract = explicitResultContract(question);
 
   async function generateTimed(correction?: SqlCorrection) {
     const started = Date.now();
@@ -122,12 +182,48 @@ export async function generateAndRunQuery(
       return { intent: "refusal" as const, message: privacyRefusal, sqlGenerationMs, queryMs };
     }
     try {
+      if (brief) {
+        const alignedOutputColumns = alignExplicitOutputColumns(
+          brief.outputColumns,
+          requestContract.requiredColumns,
+        );
+        const briefNeedsAlignment = alignedOutputColumns.length !== brief.outputColumns.length ||
+          alignedOutputColumns.some((column, index) => column !== brief!.outputColumns[index]);
+        if (briefNeedsAlignment) {
+          brief = {
+            ...brief,
+            dimensions: brief.dimensions
+              .map((column) => column === "label" || column.endsWith("_label")
+                ? requestContract.requiredColumns.find((required) =>
+                    column === "label" || column === `${required}_label`) ?? column
+                : column)
+              .filter((column) => alignedOutputColumns.includes(column)),
+            outputColumns: alignedOutputColumns,
+          };
+        }
+      }
       const contractIssues = sqlContractIssues(question, sql);
       if (contractIssues.length) throw new PipelineStageError("quality", contractIssues.join(" "), attempt);
       const result = await runTimed(sql, attempt);
       const quality = brief
         ? assessResultQuality(result.columns, result.rows, result.truncated, brief)
         : { issues: [], caveats: [] };
+      const missingColumns = requestContract.requiredColumns.filter((column) => !result.columns.includes(column));
+      if (missingColumns.length) {
+        quality.issues.push(`Result is missing explicitly requested columns: ${missingColumns.join(", ")}.`);
+      }
+      if (requestContract.expectedRowCount !== undefined && result.rows.length !== requestContract.expectedRowCount) {
+        quality.issues.push(
+          `The request requires exactly ${requestContract.expectedRowCount} rows; SQL returned ${result.rows.length}.`,
+        );
+      }
+      const arrayColumns = result.columns.filter((column) =>
+        result.rows.some((row) => Array.isArray(row[column])));
+      if (arrayColumns.length && !/\b(?:list|array|collect)\b|danh sách|liệt kê/i.test(question)) {
+        quality.issues.push(
+          `Array aggregates were not requested for ${arrayColumns.join(", ")}; return scalar metrics at the declared grain.`,
+        );
+      }
       if (quality.issues.length) {
         throw new PipelineStageError("quality", quality.issues.join(" "), attempt);
       }
