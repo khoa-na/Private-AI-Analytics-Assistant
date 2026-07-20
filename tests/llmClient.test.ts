@@ -5,6 +5,8 @@ const originalFetch = globalThis.fetch;
 const originalApiKey = process.env.OPENAI_API_KEY;
 const originalModel = process.env.OPENAI_MODEL;
 const originalBaseUrl = process.env.OPENAI_BASE_URL;
+const originalReasoningEffort = process.env.OPENAI_REASONING_EFFORT;
+const originalDeepSeekThinking = process.env.DEEPSEEK_THINKING_MODE;
 
 try {
   process.env.OPENAI_API_KEY = "test-key";
@@ -48,6 +50,17 @@ try {
   assert.deepEqual(requestBody?.chat_template_kwargs, {
     enable_thinking: false,
   });
+
+  process.env.OPENAI_MODEL = "deepseek-v4-flash";
+  process.env.OPENAI_REASONING_EFFORT = "low";
+  process.env.DEEPSEEK_THINKING_MODE = "disabled";
+  await completeChat([{ role: "user", content: "stable JSON" }], {
+    maxTokens: 50,
+    temperature: 0,
+  });
+  assert.deepEqual(requestBody?.thinking, { type: "disabled" });
+  assert.equal(requestBody?.temperature, 0);
+  assert.equal(requestBody?.reasoning_effort, undefined);
 
   globalThis.fetch = async () =>
     new Response(
@@ -155,6 +168,8 @@ try {
   restoreEnvironment("OPENAI_API_KEY", originalApiKey);
   restoreEnvironment("OPENAI_MODEL", originalModel);
   restoreEnvironment("OPENAI_BASE_URL", originalBaseUrl);
+  restoreEnvironment("OPENAI_REASONING_EFFORT", originalReasoningEffort);
+  restoreEnvironment("DEEPSEEK_THINKING_MODE", originalDeepSeekThinking);
 }
 
 function restoreEnvironment(name: string, value: string | undefined) {

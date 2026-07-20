@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateAndRunQuery, sqlContractIssues } from "../lib/generatedQuery";
+import { explicitResultContract, generateAndRunQuery, sqlContractIssues } from "../lib/generatedQuery";
 import type { SqlCorrection } from "../lib/llmSql";
 import type { QueryResult } from "../lib/queryRunner";
 import {
@@ -45,6 +45,49 @@ assert.equal(sqlContractIssues(
   "SELECT CASE WHEN age < 30 THEN 'young' ELSE 'older' END AS age_band, COUNT(*) n FROM people GROUP BY age_band",
 ).length, 1);
 assert.equal(sqlContractIssues("Count rows with a sentinel in audited fields.", "SELECT COUNT(*) FILTER (WHERE a=-1 AND b=-1 AND c=-1) AS sentinel_rows FROM t").length, 1);
+assert.equal(sqlContractIssues("Return violating_codes.", "SELECT STRING_AGG(code, ',') AS violating_codes FROM t").length, 1);
+assert.equal(sqlContractIssues("Return a list of violating codes.", "SELECT LIST(code) AS violating_codes FROM t").length, 0);
+assert.equal(sqlContractIssues(
+  "Calculate the three-month average of monthly recorded value.",
+  "WITH m AS (SELECT month, AVG(value) v FROM t GROUP BY month) SELECT AVG(v) FROM m",
+).length, 1);
+assert.equal(sqlContractIssues(
+  "Calculate the average of monthly average temperature.",
+  "WITH m AS (SELECT month, AVG(value) v FROM t GROUP BY month) SELECT AVG(v) FROM m",
+).length, 0);
+assert.equal(sqlContractIssues(
+  "Calculate the three-month average of monthly recorded value.",
+  "SELECT AVG(value) FROM t",
+).length, 1);
+assert.deepEqual(
+  explicitResultContract(
+    "Return mapping, codes_with_multiple_names, names_with_multiple_codes for exactly 11 mappings.",
+  ),
+  {
+    requiredColumns: ["mapping", "codes_with_multiple_names", "names_with_multiple_codes"],
+    expectedRowCount: 11,
+  },
+);
+assert.deepEqual(
+  explicitResultContract("Trả về customer_count; không hiển thị customer_id hay postal_code."),
+  { requiredColumns: ["customer_count"] },
+);
+assert.equal(
+  explicitResultContract("Produce a long-form 11 mapping code-name audit.").expectedRowCount,
+  11,
+);
+assert.deepEqual(
+  explicitResultContract("Return month and recorded_price_sum."),
+  { requiredColumns: ["recorded_price_sum"] },
+);
+assert.deepEqual(
+  explicitResultContract("Do not return IDs. Return age_band, customer_count."),
+  { requiredColumns: ["age_band", "customer_count"] },
+);
+assert.deepEqual(
+  explicitResultContract("Không trả về article_id. Trả về top_10_transaction_rows và top_10_share_pct."),
+  { requiredColumns: ["top_10_transaction_rows", "top_10_share_pct"] },
+);
 
 assert.match(
   privacyRefusalForQuestion("List customer_id and exact age.", privacyCatalog) ?? "",
@@ -127,6 +170,56 @@ const qualityRepaired = await generateAndRunQuery(
 assert.equal(qualityRepaired.intent, "query");
 assert.match(qualityCorrections[0].error, /^\[quality:1\].*duplicate rows/);
 assert.deepEqual(qualityCorrections[0].brief, qualityBrief);
+
+const contractCorrections: SqlCorrection[] = [];
+const contractResult = await generateAndRunQuery(
+  "Return mapping, codes_with_multiple_names, names_with_multiple_codes for exactly 11 mappings; for example mapping alpha.",
+  async (_question, correction) => {
+    if (correction) {
+      contractCorrections.push(correction);
+      return "SELECT mapping, codes_with_multiple_names, names_with_multiple_codes FROM fixed";
+    }
+    return {
+      intent: "query",
+      brief: {
+        ...qualityBrief,
+        grain: "one row per mapping",
+        dimensions: ["mapping_label"],
+        outputColumns: ["mapping_label"],
+      },
+      sql: "SELECT mapping_label FROM broken",
+    };
+  },
+  (sql) => sql.includes("broken")
+    ? {
+        sql,
+        columns: ["mapping_label", "codes_with_multiple_names", "names_with_multiple_codes"],
+        rows: Array.from({ length: 11 }, (_, index) => ({
+          mapping_label: `m${index}`,
+          codes_with_multiple_names: ["code"],
+          names_with_multiple_codes: ["name"],
+        })),
+        truncated: false,
+      }
+    : {
+        sql,
+        columns: ["mapping", "codes_with_multiple_names", "names_with_multiple_codes"],
+        rows: Array.from({ length: 11 }, (_, index) => ({
+          mapping: `m${index}`,
+          codes_with_multiple_names: 0,
+          names_with_multiple_codes: 0,
+        })),
+        truncated: false,
+      },
+);
+assert.equal(contractResult.intent, "query");
+assert.match(contractCorrections[0].error, /missing explicitly requested columns: mapping/);
+assert.match(contractCorrections[0].error, /Array aggregates were not requested/);
+assert.deepEqual(contractCorrections[0].brief?.outputColumns, [
+  "mapping",
+  "codes_with_multiple_names",
+  "names_with_multiple_codes",
+]);
 
 const clarification = await generateAndRunQuery(
   "best product",

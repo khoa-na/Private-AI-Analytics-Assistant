@@ -178,6 +178,11 @@ export function shouldFallbackToOutline(error: unknown) {
   return /token budget|json|sql plan|\bbrief\b|\bsteps?\b|requires|must be|cannot be empty/i.test(message);
 }
 
+export function prefersSingleQueryFallback(question: string) {
+  return /\breturn\b|trả về/i.test(question) &&
+    !/\b(?:independent|separate)\s+(?:queries|audits?|audit\s+queries|evidence|analyses)\b|(?:audit|truy vấn)[^.;\n]*độc lập/i.test(question);
+}
+
 function completeClarification(question: string, plan: IntentResponse): IntentResponse {
   if (plan.intent !== "clarification" || !/\b(?:best|top|performed|performance)\b|tốt nhất|hiệu quả nhất/i.test(question) ||
     /\b(?:period|time|date)\b|thời gian|giai đoạn|ngày|tháng|năm/i.test(plan.message)) return plan;
@@ -336,7 +341,15 @@ export async function generateSql(question: string, correction?: SqlCorrection) 
       plan = await request(firstError instanceof Error ? firstError.message : "Invalid SQL plan.", 2);
     } catch (secondError) {
       if (!shouldFallbackToOutline(secondError)) throw secondError;
-      return generateOutlinedPlan(question);
+      if (prefersSingleQueryFallback(question)) {
+        try {
+          plan = { intent: "query", ...await generateSingleQueryPlan(question) };
+        } catch {
+          return generateOutlinedPlan(question);
+        }
+      } else {
+        return generateOutlinedPlan(question);
+      }
     }
   }
   plan = completeClarification(question, plan);

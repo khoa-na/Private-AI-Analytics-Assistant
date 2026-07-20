@@ -66,10 +66,16 @@ export async function completeChatMessage(
     throw new Error("Set OPENAI_API_KEY and OPENAI_MODEL in .env.local.");
   }
 
+  const deepSeekThinking = /deepseek/i.test(model) &&
+    ["enabled", "disabled"].includes(process.env.DEEPSEEK_THINKING_MODE ?? "")
+    ? process.env.DEEPSEEK_THINKING_MODE as "enabled" | "disabled"
+    : undefined;
   const reasoningEffort =
-    options.reasoningEffort ??
-    (process.env.OPENAI_REASONING_EFFORT as ChatCompletionOptions["reasoningEffort"]) ??
-    (/deepseek/i.test(model) ? "low" : undefined);
+    deepSeekThinking === "disabled"
+      ? undefined
+      : options.reasoningEffort ??
+        (process.env.OPENAI_REASONING_EFFORT as ChatCompletionOptions["reasoningEffort"]) ??
+        (/deepseek/i.test(model) ? "low" : undefined);
   const localThinking =
     process.env.OPENAI_CHAT_TEMPLATE_THINKING ??
     (/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/)/i.test(baseURL) ? "false" : undefined);
@@ -84,6 +90,7 @@ export async function completeChatMessage(
       model,
       temperature: options.temperature,
       max_tokens: options.maxTokens,
+      ...(deepSeekThinking ? { thinking: { type: deepSeekThinking } } : {}),
       ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       ...(options.responseFormat
         ? { response_format: options.responseFormat }

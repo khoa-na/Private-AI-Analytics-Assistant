@@ -1,8 +1,110 @@
 # Private AI Analytics Assistant
 
-Portfolio project for an AI engineer: a TypeScript web app that turns business
-questions into safe SQL, executes them on one active DuckDB dataset, and
-visualizes grounded results.
+A local-first, dataset-agnostic AI data analyst built with TypeScript. It turns
+English or Vietnamese business questions into validated DuckDB queries and
+returns evidence-grounded answers, tables, and charts.
+
+This is an actively developed AI engineering portfolio project, not a
+production deployment. Known evaluation failures are measured and documented
+instead of hidden.
+
+## What It Demonstrates
+
+- Generic onboarding for DuckDB, CSV, TSV, and Parquet datasets.
+- Versioned semantic-layer generation, independent review, and approval.
+- Schema-aware text-to-SQL with read-only validation before execution.
+- Bounded planning with at most three queries and one SQL repair attempt.
+- Result profiling and structured analysis linked to executed evidence.
+- Dataset-specific, bilingual evaluation with correctness, safety, grounding,
+  latency, and recovery metrics.
+
+## End-to-End Pipeline
+
+```mermaid
+flowchart TD
+    Q["1. Validate business question"] --> G["2. Privacy and semantic gates"]
+    G -->|Sensitive request| RF["Refusal"]
+    G -->|Missing definition| CL["Clarification"]
+    G -->|Supported| P["3. Intent and analysis plan"]
+    S["Active schema and approved semantics"] --> P
+    P -->|Unsupported| UN["Unsupported response"]
+    P -->|Single query| SQ["4a. SQL plan"]
+    P -->|Two or three independent views| MQ["4b. Bounded multi-query plan"]
+    SQ --> RV["5. Material SQL review"]
+    MQ --> RV
+    RV --> V["6. Read-only and request-contract validation"]
+    V -->|Invalid| RP["One repair attempt"]
+    RP --> V
+    V -->|Valid| DB["7. Read-only DuckDB execution"]
+    DB --> QC["8. Result shape, grain, and quality checks"]
+    QC -->|Invalid| RP
+    QC -->|Valid single result| PF["9. Bounded result profile"]
+    QC -->|Valid multi-query steps| EV["Merge step-labelled evidence"]
+    EV --> PF
+    PF --> DA["10. Deterministic analysis when possible"]
+    DA -->|Needs interpretation| LA["Grounded LLM analysis"]
+    LA --> AV["11. Evidence, caveat, and chart validation"]
+    AV -->|Invalid| AR["One analysis repair attempt"]
+    AR --> AV
+    AV -->|Still invalid| FB["Deterministic evidence fallback"]
+    DA --> OUT["12. Answer, SQL, rows, chart, and timings"]
+    AV --> OUT
+    FB --> OUT
+    RF --> OUT
+    CL --> OUT
+    UN --> OUT
+```
+
+The request lifecycle is deliberately bounded:
+
+1. The API accepts a non-empty question of at most 2,000 characters.
+2. Deterministic privacy and dataset-semantic gates can refuse or request
+   clarification before an LLM generates SQL.
+3. The planner returns one of five typed intents: query, multi-query,
+   clarification, unsupported, or refusal.
+4. Query plans carry an objective, metric, grain, dimensions, filters, and
+   exact output aliases. Multi-query plans contain only two or three steps.
+5. Material plans are reviewed for metric, denominator, grain, filters, date
+   boundaries, and join multiplication.
+6. Every statement must be read-only and satisfy deterministic request
+   contracts before execution.
+7. DuckDB runs the SQL without exposing database access to the model.
+8. Returned columns, row count, grain, truncation, and known analytical traps
+   are checked. SQL generation receives at most one repair attempt across
+   validation, execution, and result-quality failures.
+9. Results are compressed into types, statistics, truncation state, and bounded
+   evidence rows. Multi-query steps execute concurrently and retain their
+   individual SQL and evidence.
+10. Simple results use deterministic analysis. Other results are interpreted by
+    the LLM using only the supplied profile, evidence, and allowed caveats.
+11. Analysis JSON, evidence references, claims, and chart keys are validated.
+    One analysis repair is allowed; invalid output falls back to deterministic
+    evidence instead of fabricating an answer.
+12. The response includes the answer, caveats, chart recommendation, executed
+    SQL, result rows, repair history, and per-stage timings.
+
+## Evaluation
+
+The committed H&M suite contains 97 cases ranging from basic row counts to
+temporal, statistical, data-quality, privacy, semantic, and dependent
+multi-query analysis.
+
+Two consecutive full runs on `deepseek-v4-flash` with thinking disabled,
+`temperature: 0`, and concurrency 3:
+
+| Metric | Result |
+| --- | ---: |
+| Passed | 84 / 97 and 85 / 97 |
+| Pass/fail agreement | 92 / 97 (94.8%) |
+| Average wall time | 239.6 seconds |
+| Safety failures | 0 in both runs |
+| Persistent failures | 10 |
+
+Disabling DeepSeek thinking made `temperature: 0` effective, improved the
+previous 78/97 result, and reduced average runtime from about 614 seconds. The
+remaining work is concentrated in output-contract parsing, complex
+planner/executor contracts, and five cases that still changed pass/fail state
+between the two runs.
 
 ## Stack
 
@@ -12,13 +114,14 @@ visualizes grounded results.
 - `node-sql-parser` for read-only SQL validation
 - Recharts for visualization
 
-## MVP
+## Current Limits
 
-- Inspect the active database schema.
-- Ask a business question in natural language.
-- Generate SQL with schema context.
-- Block unsafe SQL before execution.
-- Show SQL, result table, and a recommended chart.
+- Not production-ready: ten cases failed both latest evaluation runs.
+- LLM output is not fully deterministic even with `temperature: 0`.
+- Follow-up conversation, query cancellation, and production observability are
+  not complete.
+- Datasets and API credentials remain local, so the full H&M benchmark requires
+  users to provide their own data and compatible model endpoint.
 
 ## Local Setup
 
@@ -133,6 +236,14 @@ visualizes grounded results.
    ```
 
    Open `http://localhost:4000`.
+
+6. Run local checks:
+
+   ```bash
+   npm test
+   npm run typecheck
+   npm run eval -- --suite evals/hm.json --dataset hm --concurrency 3
+   ```
 
 The app introspects tables, column types, primary keys, and declared foreign
 keys at runtime. Replacing the active database does not require code changes.

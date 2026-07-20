@@ -37,6 +37,25 @@ export function assessResultQuality(
       issues.push(`Result contains duplicate rows at the declared grain: ${brief.dimensions.join(", ")}.`);
     }
   }
+  const expectedRowCount = brief.grain.match(/\bexactly\s+(\d+)\s+rows?\b/i)?.[1];
+  if (expectedRowCount !== undefined && rows.length !== Number(expectedRowCount)) {
+    issues.push(`Brief requires exactly ${expectedRowCount} rows; SQL returned ${rows.length}.`);
+  }
+
+  if (brief.dimensions.length === 0 && brief.outputColumns.length === 3 &&
+    brief.outputColumns.includes("absolute_gap")) {
+    const inputs = brief.outputColumns.filter((column) => column !== "absolute_gap");
+    const inconsistent = rows.some((row) => {
+      const [left, right] = inputs.map((column) => row[column]);
+      const gap = row.absolute_gap;
+      if (typeof left !== "number" || typeof right !== "number" || typeof gap !== "number") return false;
+      const expected = Math.abs(left - right);
+      return Math.abs(gap - expected) > Math.max(1e-12, expected * 1e-9);
+    });
+    if (inconsistent) {
+      issues.push(`absolute_gap must equal the absolute difference between ${inputs.join(" and ")}.`);
+    }
+  }
 
   const caveats = [
     ...(!rows.length ? ["The query returned no rows."] : []),
