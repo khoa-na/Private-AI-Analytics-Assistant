@@ -120,8 +120,10 @@ between the two runs.
 - LLM output is not fully deterministic even with `temperature: 0`.
 - Follow-up conversation, query cancellation, and production observability are
   not complete.
-- Datasets and API credentials remain local, so the full H&M benchmark requires
-  users to provide their own data and compatible model endpoint.
+- Dataset files and API credentials remain local. Schema, approved semantic
+  context, and bounded result evidence are sent to the configured model
+  endpoint, which may be local or remote. Running the full H&M benchmark still
+  requires users to provide their own data and compatible model endpoint.
 
 ## Local Setup
 
@@ -131,7 +133,17 @@ between the two runs.
    npm install
    ```
 
-2. Import a DuckDB file or a directory of CSV/TSV/Parquet files:
+2. Add local environment variables:
+
+   ```bash
+   cp .env.example .env.local
+   ```
+
+3. Configure any OpenAI-compatible provider through `OPENAI_BASE_URL`,
+   `OPENAI_API_KEY`, and `OPENAI_MODEL`. This is optional when importing with
+   `--no-ai`, which generates deterministic dataset guidance.
+
+4. Import a DuckDB file or a directory of CSV/TSV/Parquet files:
 
    ```bash
    npm run dataset:import -- /path/to/database.duckdb
@@ -220,15 +232,6 @@ between the two runs.
 
    This creates `data/olist/database.duckdb` without changing the active dataset.
 
-3. Add local environment variables:
-
-   ```bash
-   cp .env.example .env.local
-   ```
-
-4. Configure any OpenAI-compatible provider through `OPENAI_BASE_URL`,
-   `OPENAI_API_KEY`, and `OPENAI_MODEL`.
-
 5. Run the app:
 
    ```bash
@@ -245,12 +248,12 @@ between the two runs.
    npm run eval -- --suite evals/hm.json --dataset hm --concurrency 3
    ```
 
-The app introspects tables, column types, primary keys, and declared foreign
-keys at runtime. Replacing the active database does not require code changes.
-The `data/` directory is ignored by Git because datasets should stay local.
+The app introspects tables, column types, and primary keys at runtime. Confirmed
+relationships and measures come from the approved semantic layer in the active
+bundle. Replacing the active database does not require code changes. The
+`data/` directory is ignored by Git because datasets should stay local.
 
 ## Product Roadmap
 
-See the [AI analytics roadmap](./docs/AI_ANALYTICS_ROADMAP.md) for the phased
-plan to evolve this text-to-SQL MVP into a grounded, conversational AI data
-analyst.
+See the [AI analytics roadmap](./docs/AI_ANALYTICS_ROADMAP.md) for implementation
+history and the remaining work toward conversational and production use.
