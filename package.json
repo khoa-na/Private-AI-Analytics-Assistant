@@ -11,8 +11,9 @@
     "dataset:import": "tsx scripts/import-dataset.ts",
     "dataset:review": "tsx scripts/review-dataset.ts",
     "dataset:activate": "tsx scripts/activate-dataset.ts",
+    "model:check": "node --env-file=.env.local --import tsx scripts/check-model.ts",
     "eval": "node --env-file=.env.local --import tsx scripts/run-evals.ts",
-    "test": "tsx tests/concurrency.test.ts && tsx tests/sqlSafety.test.ts && tsx tests/jsonOutput.test.ts && tsx tests/llmClient.test.ts && tsx tests/queryRunner.test.ts && tsx tests/activeDataset.test.ts && tsx tests/resultProfile.test.ts && tsx tests/llmAnalysis.test.ts && tsx tests/summaryEvaluation.test.ts && tsx tests/datasetGuide.test.ts && tsx tests/datasetImport.test.ts && tsx tests/llmSql.test.ts && tsx tests/generatedQuery.test.ts && tsx tests/multiQuery.test.ts && tsx tests/evalQuestions.test.ts",
+    "test": "tsx tests/concurrency.test.ts && tsx tests/sqlSafety.test.ts && tsx tests/jsonOutput.test.ts && tsx tests/llmConfig.test.ts && tsx tests/llmClient.test.ts && tsx tests/queryRunner.test.ts && tsx tests/activeDataset.test.ts && tsx tests/resultProfile.test.ts && tsx tests/llmAnalysis.test.ts && tsx tests/summaryEvaluation.test.ts && tsx tests/datasetGuide.test.ts && tsx tests/datasetImport.test.ts && tsx tests/llmSql.test.ts && tsx tests/generatedQuery.test.ts && tsx tests/multiQuery.test.ts && tsx tests/evalQuestions.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
