@@ -1,6 +1,7 @@
 import type { DatasetProfile } from "./datasetImport";
 import { validateMeasureDefinition, type MeasureValidation } from "./datasetMeasure";
 import { createDatasetCatalog, renderCatalogMarkdown, renderRuntimeMarkdown, type Provenance } from "./datasetCatalog";
+import { isLlmConfigured } from "./llmConfig";
 import { completeChat, tokenBudget } from "./llmClient";
 import { parseLastJsonObject } from "./jsonOutput";
 
@@ -82,7 +83,7 @@ async function validateEnrichment(value: Record<string, unknown>, profile: Datas
 }
 
 async function generateEnrichment(profile: DatasetProfile): Promise<Enrichment> {
-  if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) return {};
+  if (!isLlmConfigured()) return {};
   const compactProfile = {
     dataset: profile.dataset,
     analysisHints: profile.analysisHints,
@@ -156,7 +157,7 @@ export async function createDatasetDraft(profile: DatasetProfile, previousSemant
   let enrichment: Enrichment = {};
   let generatedBy: "ai" | "deterministic" = "deterministic";
   let generationError: string | undefined;
-  const aiConfigured = Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL);
+  const aiConfigured = isLlmConfigured();
   try {
     enrichment = await generateEnrichment(profile);
     if (aiConfigured) generatedBy = "ai";

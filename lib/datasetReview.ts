@@ -19,6 +19,7 @@ import { validateApprovedSemantic } from "./datasetDraft";
 import type { DatasetProfile } from "./datasetImport";
 import { validateMeasureDefinition } from "./datasetMeasure";
 import { parseLastJsonObject } from "./jsonOutput";
+import { isLlmConfigured } from "./llmConfig";
 import { completeChat, tokenBudget } from "./llmClient";
 
 type MeasureCandidate = {
@@ -327,7 +328,7 @@ export async function reviewDataset(
   const model = options.useAi === false ? undefined : process.env.OPENAI_REVIEW_MODEL || process.env.OPENAI_MODEL;
   let aiReviews = new Map<string, { evidence: string[] }>();
   let reviewer: "ai" | "deterministic" = "deterministic";
-  if (model && process.env.OPENAI_API_KEY) {
+  if (model && isLlmConfigured()) {
     try {
       aiReviews = await aiMeasureReviews(
         validated.filter(({ validation }) => validation.status === "passed").map(({ candidate }) => candidate),

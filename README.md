@@ -253,6 +253,64 @@ relationships and measures come from the approved semantic layer in the active
 bundle. Replacing the active database does not require code changes. The
 `data/` directory is ignored by Git because datasets should stay local.
 
+## Bring your own model
+
+You can configure any hosted or locally served OpenAI-compatible model without modifying application source code.
+
+Run `npm run model:check` before using a new model to verify connectivity, authentication, and structured output support.
+
+### OpenRouter example
+
+```env
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+OPENAI_API_KEY=<OpenRouter API key>
+OPENAI_MODEL=deepseek/deepseek-v4-flash
+LLM_AUTH_MODE=bearer
+LLM_JSON_MODE=native
+LLM_REASONING_TRANSPORT=deepseek
+LLM_THINKING=disabled
+LLM_SEND_TEMPERATURE=true
+LLM_REQUEST_TIMEOUT_MS=60000
+LLM_MAX_RETRIES=1
+```
+
+### Local OpenAI-compatible example
+
+```env
+OPENAI_BASE_URL=http://localhost:11434/v1
+OPENAI_MODEL=<local model>
+LLM_AUTH_MODE=none
+LLM_JSON_MODE=prompt
+LLM_REASONING_TRANSPORT=chat-template
+LLM_THINKING=disabled
+LLM_SEND_TEMPERATURE=true
+LLM_REQUEST_TIMEOUT_MS=120000
+LLM_MAX_RETRIES=0
+```
+
+### Generic hosted-provider example
+
+```env
+OPENAI_BASE_URL=https://provider.example/v1
+OPENAI_API_KEY=<provider API key>
+OPENAI_MODEL=<provider model>
+LLM_AUTH_MODE=bearer
+LLM_JSON_MODE=prompt
+LLM_REASONING_TRANSPORT=none
+LLM_SEND_TEMPERATURE=true
+LLM_REQUEST_TIMEOUT_MS=60000
+LLM_MAX_RETRIES=1
+```
+
+### Notes
+
+- OpenAI API compatibility does not guarantee equal analytics quality.
+- Run `npm run model:check` before using a new model.
+- Run representative evaluations before production use.
+- Schema and bounded evidence are sent to the configured endpoint.
+- Raw database access remains local to the application.
+- A deployment currently has one provider configuration shared by its users.
+
 ## Product Roadmap
 
 See the [AI analytics roadmap](./docs/AI_ANALYTICS_ROADMAP.md) for implementation
